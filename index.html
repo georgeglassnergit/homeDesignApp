@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Home Studio — Phase 0 spike</title>
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #d9d4cc; font-family: system-ui, sans-serif; }
+      #app { position: fixed; inset: 0; }
+      #hud {
+        position: fixed; left: 12px; top: 12px; z-index: 10;
+        background: rgba(255,255,255,.82); backdrop-filter: blur(4px);
+        border: 1px solid #cbb; border-radius: 10px; padding: 10px 13px;
+        font-size: 12px; color: #2b2622; line-height: 1.5; max-width: 260px;
+      }
+      #hud b { font-family: Georgia, serif; }
+      #hud .ok { color: #2e7d32; } #hud .err { color: #c62828; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="hud"><b>Home Studio — Phase 1</b><div id="status">booting…</div></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

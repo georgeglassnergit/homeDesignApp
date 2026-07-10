@@ -1,0 +1,8 @@
+{
+  "name": "home-studio-phase2-core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Phase 2 engine-independent core (model, units, commands, history, state, templates). No Three.js. Verified with plain Node.",
+  "scripts": { "test": "node test/phase2-core.test.mjs" }
+}
