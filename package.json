@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:edit": "node src/test/edit-core.test.mjs"
   },
   "dependencies": {
     "three": "^0.169.0",

@@ -133,6 +133,18 @@ export function projectCounts(project) {
   return { levels: project.levels.length, walls, openings, rooms, furniture: project.furniture.length };
 }
 
+// ---- lookups (used by the edit/command layer; still pure data) --------------
+
+export function findLevel(project, levelId) {
+  return project.levels.find(l => l.id === levelId) || null;
+}
+export function findWall(level, wallId) {
+  return level ? level.walls.find(w => w.id === wallId) || null : null;
+}
+export function findOpening(level, openingId) {
+  return level ? level.openings.find(o => o.id === openingId) || null : null;
+}
+
 // ---- validation ------------------------------------------------------------
 
 export function validateProject(project) {

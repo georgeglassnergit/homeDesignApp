@@ -40,12 +40,25 @@ export function availableTools(mode) {
   return Object.keys(FEATURE_TIERS).filter(id => isAvailable(id, mode));
 }
 
+// Tool ids the S1 interaction layer switches between (the state machine's states).
+export const TOOL = Object.freeze({
+  SELECT: 'select', DRAW_WALL: 'draw-wall', PLACE_DOOR: 'place-door', PLACE_WINDOW: 'place-window',
+});
+export const VIEW = Object.freeze({ EXTERIOR: 'exterior', CUTAWAY: 'cutaway' });
+export const CAMERA = Object.freeze({ ORBIT: 'orbit', WALK: 'walk' });
+
 export function createAppState(opts = {}) {
   return {
     mode: opts.mode || MODE.SIMPLE,
     units: opts.units || UNIT.METRIC,
     selection: null,
+    activeTool: opts.activeTool || TOOL.SELECT,   // S1 tool state machine
+    view: opts.view || VIEW.EXTERIOR,             // S5 exterior <-> cutaway (view pref)
+    camera: opts.camera || CAMERA.ORBIT,          // S6 orbit <-> walk
     setMode(m) { this.mode = m; },
     setUnits(u) { this.units = u; },
+    setTool(t) { this.activeTool = t; },
+    setView(v) { this.view = v; },
+    setCamera(c) { this.camera = c; },
   };
 }
