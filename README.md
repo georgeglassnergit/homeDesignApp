@@ -25,7 +25,7 @@ DEV-LOG.md           append-only log the daily run writes to (newest on top)
 ```
 
 ## Status
-Phase 0 (GO) and Phase 1 (data model + lossless save) complete. Phase 2 (interactive skeleton) in progress: engine-independent core done & tested; Three.js view/interaction layer pending per `phase2/VIEW-LAYER-CONTRACT.md`.
+Phase 0 (GO) and Phase 1 (data model + lossless save) complete. Phase 2 (interactive skeleton) in progress: S1 command/undo core + S2 (draw & edit walls in plan view) + S3 (place door/window, CSG-carved) are landed in the runnable `src/` app and verified headlessly (`docs/verification/phase2-s2s3.png`). Remaining: S4 template-picker start screen, S5 exterior/cutaway toggle, S6 walk-through camera.
 
 ## Autonomous daily development
 A scheduled run (see `automation/`) works this repo every morning: ~30 min review + landscape research to pick the highest-value revision, ~55 min implement + headless-verify, then it logs to `DEV-LOG.md`, pushes a dated branch, and opens a PR for review. Setup in `automation/SETUP.md`.

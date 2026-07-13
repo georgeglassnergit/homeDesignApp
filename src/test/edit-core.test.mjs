@@ -11,8 +11,13 @@ import {
 } from '../core/model.js';
 import { parseLength, formatLength, UNIT } from '../core/units.js';
 import { isAvailable, availableTools, createAppState, MODE, TOOL, VIEW } from '../app/state.js';
-import { addWall, moveWallVertex, removeWall, addOpening, removeOpening, loadTemplate } from '../edit/commands.js';
+import { addWall, moveWallVertex, removeWall, addOpening, removeOpening, loadTemplate, composite } from '../edit/commands.js';
 import { History } from '../edit/history.js';
+// View-layer interaction logic that must stay engine-independent. Node has no `three`
+// installed, so if planView.js or tools.js imported three this file would fail to load —
+// importing them here is itself the model/view-separation guard for S2/S3.
+import { createPlanView, snap, pointToSegment, nearestVertex, nearestWallHit } from '../edit/planView.js';
+import { ToolController } from '../edit/tools.js';
 import { sampleHome } from '../templates/sampleHome.js';
 import { blank, studio, STARTERS } from '../templates/starters.js';
 
@@ -145,6 +150,108 @@ for (const s of STARTERS) {
 ok(threw(() => addWall('NOPE', createWall({ x: 0, z: 0 }, { x: 1, z: 0 })).do(proj)), '9a addWall throws on missing level');
 ok(threw(() => removeWall('L', 'ghost').do(proj)), '9b removeWall throws on missing wall');
 ok(threw(() => addOpening('L', createOpening('ghost', 'door', { offset: 0.5 })).do(proj)), '9c addOpening throws on missing wall');
+
+// ============================================================================
+// S2/S3 view-layer interaction logic (engine-independent half).
+// planView is pure screen<->world + plan-space geometry; ToolController turns
+// gestures into the SAME commands proven above. No Three.js is imported here.
+// ============================================================================
+
+// 10) planView screen<->world mapping round-trips
+const pv0 = createPlanView({ width: 400, height: 300, pxPerMeter: 40, center: { x: 0, z: 0 } });
+const c0 = pv0.screenToWorld(200, 150);
+ok(near(c0.x, 0) && near(c0.z, 0), '10a canvas center maps to view center');
+const sc = pv0.worldToScreen({ x: 1, z: -0.5 });
+ok(near(sc.px, 240) && near(sc.py, 130), '10b worldToScreen matches pxPerMeter');
+const rt = pv0.worldToScreen(pv0.screenToWorld(123, 77));
+ok(near(rt.px, 123) && near(rt.py, 77), '10c screen->world->screen round-trips');
+ok(near(snap({ x: 0.13, z: -0.07 }, 0.1).x, 0.1) && near(snap({ x: 0.13, z: -0.07 }, 0.1).z, -0.1), '10d grid snap');
+
+// 11) plan-space hit-testing is correct
+const seg = pointToSegment({ x: 2, z: 1 }, { x: 0, z: 0 }, { x: 4, z: 0 });
+ok(near(seg.dist, 1) && near(seg.t, 0.5) && near(seg.point.x, 2), '11a point-to-segment distance/param');
+const tw = [createWall({ x: 0, z: 0 }, { x: 4, z: 0 }, { id: 'w0' })];
+const nv = nearestVertex({ x: 3.95, z: 0.05 }, tw, 0.25);
+ok(nv && nv.wallId === 'w0' && nv.end === 'b', '11b nearestVertex finds the near endpoint');
+ok(nearestVertex({ x: 2, z: 2 }, tw, 0.25) === null, '11c nearestVertex misses when far');
+const nwh = nearestWallHit({ x: 3, z: 0.05 }, tw, 0.3);
+ok(nwh && near(nwh.offset, 3, 0.1), '11d nearestWallHit offset = distance from endpoint a');
+
+// 12) ToolController draws a 4-wall room from blank (S2), driving real commands
+_resetIds();
+const tProj = createProject({ name: 'Draw', levels: [createLevel({ id: 'L' })] });
+const tHist = new History(tProj, { limit: 100 });
+const tState = createAppState({ mode: MODE.SIMPLE });
+const tPV = createPlanView({ width: 400, height: 400, pxPerMeter: 40, center: { x: 2, z: 2 } });
+let rebuilds = 0;
+const tc = new ToolController({ state: tState, history: tHist, project: tProj, planView: tPV, levelId: 'L', rebuild: () => { rebuilds++; } });
+
+tc.setTool(TOOL.DRAW_WALL);
+ok(tState.activeTool === TOOL.DRAW_WALL, '12a controller switched to draw-wall');
+for (const p of [{ x: 0, z: 0 }, { x: 4, z: 0 }, { x: 4, z: 4 }, { x: 0, z: 4 }, { x: 0, z: 0 }]) tc.pointerDown(p);
+tc.finishChain();
+ok(tProj.levels[0].walls.length === 4, '12b drew a 4-wall room via the tool controller');
+ok(validateProject(tProj).ok, '12c drawn room validates');
+ok(rebuilds === 4, '12d rebuild fired once per committed wall (not on the first anchor click)');
+ok(near(wallLength(tProj.levels[0].walls[0]), 4), '12e first wall is 4 m long');
+
+// duplicate click at the same point must NOT create a zero-length wall
+const before12 = tProj.levels[0].walls.length;
+tc.setTool(TOOL.DRAW_WALL); tc.pointerDown({ x: 1, z: 1 }); tc.pointerDown({ x: 1, z: 1 });
+ok(tProj.levels[0].walls.length === before12, '12f duplicate/near-zero click makes no wall');
+tc.finishChain();
+
+// 13) select + drag a shared corner moves BOTH adjoining walls as one undoable edit (S2)
+tc.setTool(TOOL.SELECT);
+tc.pointerDown({ x: 4, z: 0 });          // grab the corner shared by walls 0 and 1
+tc.pointerMove({ x: 5, z: 0 });
+tc.pointerUp({ x: 5, z: 0 });
+const w0 = tProj.levels[0].walls[0], w1 = tProj.levels[0].walls[1];
+ok(near(w0.b.x, 5) && near(w1.a.x, 5), '13a corner drag moved both walls sharing it');
+ok(tHist.undoStack[tHist.undoStack.length - 1].name === 'Move corner', '13b drag committed as one composite command');
+const draggedSer = serialize(tProj);
+tc.undo();
+ok(near(tProj.levels[0].walls[0].b.x, 4) && near(tProj.levels[0].walls[1].a.x, 4), '13c undo restores the corner');
+tc.redo();
+ok(serialize(tProj) === draggedSer, '13d redo re-applies the corner move byte-identical');
+tc.undo(); // leave the room square
+
+// 14) place a door and a window by clicking a wall (S3), lossless round-trip survives
+tc.setTool(TOOL.PLACE_DOOR);
+tc.pointerDown({ x: 2, z: 0.05 });        // click near wall 0 (the z=0 wall)
+ok(tProj.levels[0].openings.length === 1 && tProj.levels[0].openings[0].kind === 'door', '14a door placed on clicked wall');
+tc.setTool(TOOL.PLACE_WINDOW);
+tc.pointerDown({ x: 2, z: 3.95 });        // click near the far wall
+ok(tProj.levels[0].openings.length === 2 && tProj.levels[0].openings[1].kind === 'window', '14b window placed on clicked wall');
+ok(validateProject(tProj).ok, '14c door + window both fit and validate');
+const openSer = serialize(tProj);
+ok(serialize(deserialize(openSer)) === openSer, '14d lossless round-trip survives placed openings');
+
+// 15) selecting a wall + deleteSelection cascades to its openings and undoes losslessly (S1/S2)
+tc.setTool(TOOL.SELECT);
+tc.pointerDown({ x: 2, z: 0.02 });        // select wall 0 (carries the door)
+ok(tState.selection && tState.selection.kind === 'wall', '15a clicking a wall selects it');
+const beforeDel = serialize(tProj);
+tc.deleteSelection();
+ok(tProj.levels[0].walls.length === 3, '15b wall deleted');
+ok(tProj.levels[0].openings.every((o) => o.kind !== 'door'), '15c its door cascaded away');
+tc.undo();
+ok(serialize(tProj) === beforeDel, '15d undo delete restores wall + door byte-identical');
+
+// 16) the Simple/Pro seam still gates exact tools (unchanged by S2/S3)
+ok(isAvailable('exact-dimensions', tState.mode) === false, '16a exact dimensions stay Pro-only in Simple');
+
+// 17) composite command applies/reverts its subcommands in order
+_resetIds();
+const cp = createProject({ name: 'C', levels: [createLevel({ id: 'L' })] });
+const ch = new History(cp);
+ch.execute(composite('Two walls', [
+  addWall('L', createWall({ x: 0, z: 0 }, { x: 1, z: 0 }, { id: 'p' })),
+  addWall('L', createWall({ x: 1, z: 0 }, { x: 1, z: 1 }, { id: 'q' })),
+]));
+ok(cp.levels[0].walls.length === 2, '17a composite applied both subcommands');
+ch.undo();
+ok(cp.levels[0].walls.length === 0, '17b composite undo reverted both');
 
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'} — ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

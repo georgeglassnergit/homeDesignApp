@@ -43,6 +43,8 @@ export function moveWallVertex(levelId, wallId, end, pt) {
 }
 
 // Remove a wall and any openings that reference it (captured for lossless undo).
+// Openings are captured with their original array indices so undo restores them in
+// place — keeping the save file byte-identical across a remove→undo round-trip.
 export function removeWall(levelId, wallId) {
   let removedWall = null, removedOpenings = [], wallIndex = -1;
   return {
@@ -54,13 +56,17 @@ export function removeWall(levelId, wallId) {
       if (wallIndex < 0) throw new Error(`removeWall: missing wall ${wallId}`);
       removedWall = lvl.walls[wallIndex];
       lvl.walls.splice(wallIndex, 1);
-      removedOpenings = lvl.openings.filter(o => o.wallId === wallId);
+      removedOpenings = [];
+      for (let i = 0; i < lvl.openings.length; i++) {
+        if (lvl.openings[i].wallId === wallId) removedOpenings.push({ index: i, opening: lvl.openings[i] });
+      }
       lvl.openings = lvl.openings.filter(o => o.wallId !== wallId);
     },
     undo(project) {
       const lvl = findLevel(project, levelId);
       lvl.walls.splice(wallIndex, 0, removedWall);
-      lvl.openings.push(...removedOpenings);
+      // captured ascending, so re-inserting ascending lands each opening at its old index
+      for (const { index, opening } of removedOpenings) lvl.openings.splice(index, 0, opening);
     },
   };
 }
@@ -98,6 +104,17 @@ export function removeOpening(levelId, openingId) {
       const lvl = findLevel(project, levelId);
       lvl.openings.splice(idx, 0, removed);
     },
+  };
+}
+
+// Group several commands into one undo/redo unit (e.g. dragging a shared corner moves
+// every wall touching it as a single edit). do() applies in order; undo() reverses order.
+export function composite(name, subcommands) {
+  const cmds = subcommands.filter(Boolean);
+  return {
+    name: name || 'Edit',
+    do(project) { for (const c of cmds) c.do(project); },
+    undo(project) { for (let i = cmds.length - 1; i >= 0; i--) cmds[i].undo(project); },
   };
 }
 
