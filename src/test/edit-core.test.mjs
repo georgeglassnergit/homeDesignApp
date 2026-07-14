@@ -11,8 +11,10 @@ import {
 } from '../core/model.js';
 import { parseLength, formatLength, UNIT } from '../core/units.js';
 import { isAvailable, availableTools, createAppState, MODE, TOOL, VIEW } from '../app/state.js';
-import { addWall, moveWallVertex, removeWall, addOpening, removeOpening, loadTemplate, composite } from '../edit/commands.js';
+import { addWall, moveWallVertex, removeWall, addOpening, removeOpening, loadTemplate, composite, setView } from '../edit/commands.js';
 import { History } from '../edit/history.js';
+// S5 cutaway decision — pure math, must stay three-free (importing under Node is the guard).
+import { cutawayHiddenWalls, wallsCenterXZ } from '../viewer/cutaway.js';
 // View-layer interaction logic that must stay engine-independent. Node has no `three`
 // installed, so if planView.js or tools.js imported three this file would fail to load —
 // importing them here is itself the model/view-separation guard for S2/S3.
@@ -252,6 +254,45 @@ ch.execute(composite('Two walls', [
 ok(cp.levels[0].walls.length === 2, '17a composite applied both subcommands');
 ch.undo();
 ok(cp.levels[0].walls.length === 0, '17b composite undo reverted both');
+
+// 18) setView (S5) — undoable, persisted display pref that never touches geometry
+_resetIds();
+const vp = sampleHome();
+const vh = new History(vp);
+const wallsBefore = vp.levels[0].walls.length, opsBefore = vp.levels[0].openings.length;
+const vBaseline = serialize(vp);
+ok((vp.meta && vp.meta.view) === undefined, '18a fresh project has no view pref');
+vh.execute(setView(VIEW.CUTAWAY));
+ok(vp.meta.view === VIEW.CUTAWAY, '18b setView writes meta.view');
+ok(vp.levels[0].walls.length === wallsBefore && vp.levels[0].openings.length === opsBefore, '18c setView leaves geometry untouched');
+ok(validateProject(vp).ok, '18d project with a view pref still validates');
+const vCutSer = serialize(vp);
+ok(serialize(deserialize(vCutSer)) === vCutSer, '18e view pref round-trips losslessly');
+vh.execute(setView(VIEW.EXTERIOR));
+ok(vp.meta.view === VIEW.EXTERIOR, '18f setView overwrites the pref');
+vh.undo();
+ok(vp.meta.view === VIEW.CUTAWAY, '18g undo restores the previous view');
+vh.undo();
+ok(serialize(vp) === vBaseline, '18h undoing the first setView restores the baseline byte-identically (no lingering meta.view)');
+
+// 19) cutawayHiddenWalls (S5) — pure geometry decision for the interior cutaway
+_resetIds();
+// a 4x4 square room centred at the origin (walls named by the side they sit on)
+const sq = [
+  createWall({ x: -2, z: -2 }, { x: 2, z: -2 }, { id: 'north' }),  // z = -2
+  createWall({ x: 2, z: -2 }, { x: 2, z: 2 }, { id: 'east' }),     // x = +2
+  createWall({ x: 2, z: 2 }, { x: -2, z: 2 }, { id: 'south' }),    // z = +2
+  createWall({ x: -2, z: 2 }, { x: -2, z: -2 }, { id: 'west' }),   // x = -2
+];
+const ctr = wallsCenterXZ(sq);
+ok(near(ctr.x, 0) && near(ctr.z, 0), '19a centroid of the square is the origin');
+const fromSouthEast = cutawayHiddenWalls(sq, { x: 8, z: 8 });   // camera in the +x/+z quadrant
+ok(fromSouthEast.has('south') && fromSouthEast.has('east'), '19b near (camera-side) walls are hidden');
+ok(!fromSouthEast.has('north') && !fromSouthEast.has('west'), '19c far walls stay visible to frame the interior');
+const fromNorth = cutawayHiddenWalls(sq, { x: 0, z: -8 });      // camera on the -z side
+ok(fromNorth.has('north') && !fromNorth.has('south'), '19d cutaway follows the camera to the opposite side');
+ok(cutawayHiddenWalls(sq, { x: 0, z: 0 }).size === 0, '19e camera over the centre hides nothing (degenerate guard)');
+ok(cutawayHiddenWalls([], { x: 5, z: 5 }).size === 0, '19f no walls -> nothing hidden (no throw)');
 
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'} — ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

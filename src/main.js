@@ -1,7 +1,8 @@
 import { createViewer } from './viewer/viewer.js';
 import { buildScene, sceneBounds, rebuildGeometry } from './build/sceneBuilder.js';
 import { serialize, deserialize, validateProject, projectCounts } from './core/model.js';
-import { createAppState, availableTools, MODE, TOOL } from './app/state.js';
+import { createAppState, availableTools, MODE, TOOL, VIEW } from './app/state.js';
+import { cutawayHiddenWalls } from './viewer/cutaway.js';
 import { formatLength } from './core/units.js';
 import { History } from './edit/history.js';
 import { ToolController } from './edit/tools.js';
@@ -9,7 +10,7 @@ import { createPlanView } from './edit/planView.js';
 import { raycast, eventToNDC } from './edit/picking.js';
 import { createPlanCanvas } from './app/planCanvas.js';
 import { STARTERS } from './templates/starters.js';
-import { loadTemplate } from './edit/commands.js';
+import { loadTemplate, setView } from './edit/commands.js';
 
 const spike = { booted: false, built: false, sceneMeshes: 0, roundTripOk: false, counts: null, error: null };
 window.__app = spike;
@@ -63,8 +64,28 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       rebuildGeometry(home, project);
       plan.draw();
       runRoundTrip();
+      // keep the view seam in sync (undo/redo/template-load may change meta.view)
+      app.view = (project.meta && project.meta.view) || VIEW.EXTERIOR;
+      syncViewButtons();
       updateStatus();
     }
+
+    // S5: exterior <-> cutaway. View is a display pref (project.meta.view); the per-frame
+    // hook re-applies visibility every frame so the cutaway self-corrects as the camera
+    // orbits. It only toggles mesh.visible — geometry (and object count) is never mutated.
+    function applyView() {
+      const cutaway = ((project.meta && project.meta.view) || VIEW.EXTERIOR) === VIEW.CUTAWAY;
+      const hidden = cutaway
+        ? cutawayHiddenWalls(project.levels.flatMap((l) => l.walls), { x: viewer.camera.position.x, z: viewer.camera.position.z })
+        : null;
+      for (const obj of home.children) {
+        const k = obj.userData.kind;
+        if (k === 'roof') obj.visible = !cutaway;
+        else if (k === 'wall') obj.visible = !(cutaway && hidden.has(obj.userData.modelId));
+        // floors, ground and furniture stay visible in both views
+      }
+    }
+    viewer.onFrame(applyView);
 
     function updateStatus() {
       const c = spike.counts;
@@ -92,6 +113,16 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
     $('delete').addEventListener('click', () => controller.deleteSelection());
     $('undo').addEventListener('click', () => controller.undo());
     $('redo').addEventListener('click', () => controller.redo());
+
+    // --- exterior / cutaway view toggle (S5) — an undoable, persisted display pref ---
+    const viewButtons = [...document.querySelectorAll('#views button')];
+    function syncViewButtons() { viewButtons.forEach((b) => b.classList.toggle('active', b.dataset.view === app.view)); }
+    viewButtons.forEach((b) => b.addEventListener('click', () => {
+      const v = b.dataset.view;
+      if (v === app.view) return;
+      history.execute(setView(v));   // do() writes project.meta.view; refresh() re-syncs app.view + buttons
+      refresh();
+    }));
 
     // --- starter dropdown (drives the existing loadTemplate command) ---
     const tpl = $('tpl');
@@ -128,11 +159,12 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
     plan.resize();
     plan.frameModel();
     syncToolButtons();
+    syncViewButtons();
     updateStatus();
     spike.built = true; spike.booted = true;
 
     // handles for the headless verification harness
-    Object.assign(window, { __viewer: viewer, __home: home, __project: () => project, __controller: controller, __plan: plan, __planView: planView, __history: history, __state: app });
+    Object.assign(window, { __viewer: viewer, __home: home, __project: () => project, __controller: controller, __plan: plan, __planView: planView, __history: history, __state: app, __applyView: applyView, __setView: (v) => { history.execute(setView(v)); refresh(); } });
     window.__selftest = () => { const j = serialize(project); const p = deserialize(j); return { valid: validateProject(p).ok, lossless: serialize(p) === j, counts: projectCounts(p) }; };
   } catch (e) {
     spike.error = String((e && e.stack) || e);
