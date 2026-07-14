@@ -107,6 +107,26 @@ export function removeOpening(levelId, openingId) {
   };
 }
 
+// Set the view mode (S5: 'exterior' | 'cutaway'). This is a DISPLAY preference, not
+// geometry — it lives in project.meta.view so it round-trips with the save file, and it
+// is undoable like any other edit. do()/undo() touch only meta, so scene geometry (and
+// the object count) is untouched; the view layer reads meta.view to toggle visibility.
+export function setView(view) {
+  let prev;
+  return {
+    name: `View: ${view}`,
+    do(project) {
+      if (!project.meta || typeof project.meta !== 'object') project.meta = {};
+      prev = project.meta.view;
+      project.meta.view = view;
+    },
+    undo(project) {
+      if (prev === undefined) delete project.meta.view;
+      else project.meta.view = prev;
+    },
+  };
+}
+
 // Group several commands into one undo/redo unit (e.g. dragging a shared corner moves
 // every wall touching it as a single edit). do() applies in order; undo() reverses order.
 export function composite(name, subcommands) {

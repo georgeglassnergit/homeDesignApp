@@ -45,9 +45,22 @@ export function createViewer(container) {
     renderer.setSize(innerWidth, innerHeight);
   });
 
+  // Per-frame hooks. The viewer stays model-agnostic; callers (e.g. the cutaway updater)
+  // register here to run just before each render — used for camera-relative visibility.
+  const frameHooks = [];
+  function onFrame(cb) { frameHooks.push(cb); return () => { const i = frameHooks.indexOf(cb); if (i >= 0) frameHooks.splice(i, 1); }; }
+
   let raf;
-  function start() { const tick = () => { controls.update(); renderer.render(scene, camera); raf = requestAnimationFrame(tick); }; tick(); }
+  function start() {
+    const tick = () => {
+      controls.update();
+      for (const cb of frameHooks) cb();
+      renderer.render(scene, camera);
+      raf = requestAnimationFrame(tick);
+    };
+    tick();
+  }
   function stop() { cancelAnimationFrame(raf); }
 
-  return { renderer, scene, camera, controls, frame, start, stop };
+  return { renderer, scene, camera, controls, frame, start, stop, onFrame };
 }
