@@ -1,7 +1,8 @@
 import { createViewer } from './viewer/viewer.js';
+import { createWalkController } from './viewer/walkCamera.js';
 import { buildScene, sceneBounds, rebuildGeometry } from './build/sceneBuilder.js';
 import { serialize, deserialize, validateProject, projectCounts } from './core/model.js';
-import { createAppState, availableTools, MODE, TOOL, VIEW } from './app/state.js';
+import { createAppState, availableTools, MODE, TOOL, VIEW, CAMERA } from './app/state.js';
 import { cutawayHiddenWalls } from './viewer/cutaway.js';
 import { formatLength } from './core/units.js';
 import { History } from './edit/history.js';
@@ -93,7 +94,7 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       setStatus(
         `<span class="ok">✓</span> ${c.walls} walls · ${c.openings} openings · ${c.rooms} rooms<br>` +
         `<span class="ok">✓</span> save/load round-trip ${spike.roundTripOk ? 'lossless' : '<span class="err">FAILED</span>'}<br>` +
-        `<span class="muted">tool:</span> ${app.activeTool} · <span class="muted">mode:</span> ${app.mode} · ${availableTools(app.mode).length} tools · undo ${history.undoStack.length}`
+        `<span class="muted">tool:</span> ${app.activeTool} · <span class="muted">cam:</span> ${app.camera} · <span class="muted">mode:</span> ${app.mode} · ${availableTools(app.mode).length} tools · undo ${history.undoStack.length}`
       );
     }
 
@@ -124,12 +125,35 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       refresh();
     }));
 
+    // --- orbit / walk-through camera toggle (S6) — pure view state, no model fields ---
+    // Walk drives the same perspective camera at eye height; orbit input is suspended while
+    // walking and restored (with a fresh framing) on exit. Esc also exits walk.
+    const walk = createWalkController(viewer);
+    const cameraButtons = [...document.querySelectorAll('#cameras button')];
+    function syncCameraButtons() { cameraButtons.forEach((b) => b.classList.toggle('active', b.dataset.camera === app.camera)); }
+    function setCamera(mode) {
+      if (mode === app.camera) return;
+      if (mode === CAMERA.WALK) {
+        walk.enable(project.levels.flatMap((l) => l.walls), project.levels[0]);
+        app.camera = CAMERA.WALK;
+        hint('Walk: WASD / arrows to move · drag to look · Esc to exit');
+      } else {
+        walk.disable();
+        viewer.frame(sceneBounds(home), 1.4);   // hand a sensible view back to orbit
+        app.camera = CAMERA.ORBIT;
+      }
+      syncCameraButtons();
+      updateStatus();
+    }
+    cameraButtons.forEach((b) => b.addEventListener('click', () => setCamera(b.dataset.camera)));
+
     // --- starter dropdown (drives the existing loadTemplate command) ---
     const tpl = $('tpl');
     for (const s of STARTERS) { const o = document.createElement('option'); o.value = s.id; o.textContent = s.label; tpl.appendChild(o); }
     tpl.value = 'two';
     tpl.addEventListener('change', () => {
       const s = STARTERS.find((x) => x.id === tpl.value); if (!s) return;
+      if (app.camera === CAMERA.WALK) setCamera(CAMERA.ORBIT);   // walls change → leave walk cleanly
       history.execute(loadTemplate(s.build()));
       controller.levelId = project.levels[0].id;
       app.selection = null;
@@ -140,6 +164,7 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
 
     // --- 3D-view selection via raycasting (VIEW-LAYER-CONTRACT §2) ---
     viewer.renderer.domElement.addEventListener('pointerdown', (e) => {
+      if (app.camera === CAMERA.WALK) return;        // in walk mode drag = look, not select
       if (app.activeTool !== TOOL.SELECT) return;   // don't fight orbit while drawing
       const hitObj = raycast(eventToNDC(e, viewer.renderer.domElement), viewer.camera, home);
       app.selection = hitObj && hitObj.modelId ? { kind: hitObj.kind === 'floor' ? 'room' : hitObj.kind, id: hitObj.modelId } : null;
@@ -148,7 +173,7 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
 
     // --- keyboard: Esc ends a wall run, Del removes selection, Ctrl+Z/Y undo/redo ---
     addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') { controller.finishChain(); plan.draw(); }
+      if (e.key === 'Escape') { if (app.camera === CAMERA.WALK) setCamera(CAMERA.ORBIT); else { controller.finishChain(); plan.draw(); } }
       else if (e.key === 'Delete' || e.key === 'Backspace') { controller.deleteSelection(); }
       else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? controller.redo() : controller.undo(); }
       else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { e.preventDefault(); controller.redo(); }
@@ -160,11 +185,12 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
     plan.frameModel();
     syncToolButtons();
     syncViewButtons();
+    syncCameraButtons();
     updateStatus();
     spike.built = true; spike.booted = true;
 
     // handles for the headless verification harness
-    Object.assign(window, { __viewer: viewer, __home: home, __project: () => project, __controller: controller, __plan: plan, __planView: planView, __history: history, __state: app, __applyView: applyView, __setView: (v) => { history.execute(setView(v)); refresh(); } });
+    Object.assign(window, { __viewer: viewer, __home: home, __project: () => project, __controller: controller, __plan: plan, __planView: planView, __history: history, __state: app, __applyView: applyView, __setView: (v) => { history.execute(setView(v)); refresh(); }, __walk: walk, __setCamera: setCamera });
     window.__selftest = () => { const j = serialize(project); const p = deserialize(j); return { valid: validateProject(p).ok, lossless: serialize(p) === j, counts: projectCounts(p) }; };
   } catch (e) {
     spike.error = String((e && e.stack) || e);
