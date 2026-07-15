@@ -15,6 +15,11 @@ import { addWall, moveWallVertex, removeWall, addOpening, removeOpening, loadTem
 import { History } from '../edit/history.js';
 // S5 cutaway decision — pure math, must stay three-free (importing under Node is the guard).
 import { cutawayHiddenWalls, wallsCenterXZ } from '../viewer/cutaway.js';
+// S6 walk-camera math — pure, must stay three-free (importing under Node is the guard).
+import {
+  forwardXZ, rightXZ, lookDir, eyeHeight, levelBoundsXZ, clampToBounds, stepWalk, stepLook,
+  EYE_HEIGHT, WALK_SPEED, MAX_PITCH,
+} from '../viewer/walk.js';
 // View-layer interaction logic that must stay engine-independent. Node has no `three`
 // installed, so if planView.js or tools.js imported three this file would fail to load —
 // importing them here is itself the model/view-separation guard for S2/S3.
@@ -293,6 +298,77 @@ const fromNorth = cutawayHiddenWalls(sq, { x: 0, z: -8 });      // camera on the
 ok(fromNorth.has('north') && !fromNorth.has('south'), '19d cutaway follows the camera to the opposite side');
 ok(cutawayHiddenWalls(sq, { x: 0, z: 0 }).size === 0, '19e camera over the centre hides nothing (degenerate guard)');
 ok(cutawayHiddenWalls([], { x: 5, z: 5 }).size === 0, '19f no walls -> nothing hidden (no throw)');
+
+// ============================================================================
+// S6 walk-through camera math (engine-independent half). The controller that maps
+// these numbers onto the Three camera lives in viewer/walkCamera.js (three-side);
+// the movement/look/clamp logic proven here is pure and node-testable.
+// ============================================================================
+
+// 20) heading basis vectors — yaw 0 looks toward -Z; right is +X (right-handed, +Y up)
+ok(near(forwardXZ(0).x, 0) && near(forwardXZ(0).z, -1), '20a yaw 0 forward is -Z');
+ok(near(rightXZ(0).x, 1) && near(rightXZ(0).z, 0), '20b yaw 0 right is +X');
+// yaw +90° (turn left, CCW from above) points forward toward -X
+ok(near(forwardXZ(Math.PI / 2).x, -1) && near(forwardXZ(Math.PI / 2).z, 0), '20c yaw +90° forward is -X');
+ok(near(Math.hypot(forwardXZ(1.3).x, forwardXZ(1.3).z), 1), '20d forward is a unit vector');
+// forward ⟂ right at any yaw
+const dotFR = forwardXZ(0.7).x * rightXZ(0.7).x + forwardXZ(0.7).z * rightXZ(0.7).z;
+ok(near(dotFR, 0), '20e forward and right are perpendicular');
+
+// 21) lookDir agrees with forwardXZ at pitch 0, and pitch tilts the y component
+const ld0 = lookDir(0, 0);
+ok(near(ld0.x, 0) && near(ld0.y, 0) && near(ld0.z, -1), '21a lookDir at yaw/pitch 0 is -Z');
+ok(lookDir(0, 0.5).y > 0 && lookDir(0, -0.5).y < 0, '21b positive pitch looks up, negative looks down');
+ok(near(Math.hypot(lookDir(0.9, 0.4).x, lookDir(0.9, 0.4).y, lookDir(0.9, 0.4).z), 1), '21c lookDir is a unit vector');
+
+// 22) eye height = level elevation + standing eye height
+ok(near(eyeHeight(null), EYE_HEIGHT), '22a eye height with no level is the default');
+ok(near(eyeHeight({ elevation: 3 }), 3 + EYE_HEIGHT), '22b eye height adds the level elevation');
+
+// 23) levelBoundsXZ + clampToBounds keep the walker inside the (inset) footprint
+const room = [
+  createWall({ x: 0, z: 0 }, { x: 6, z: 0 }, { id: 'n' }),
+  createWall({ x: 6, z: 0 }, { x: 6, z: 4 }, { id: 'e' }),
+  createWall({ x: 6, z: 4 }, { x: 0, z: 4 }, { id: 's' }),
+  createWall({ x: 0, z: 4 }, { x: 0, z: 0 }, { id: 'w' }),
+];
+const bnd = levelBoundsXZ(room, 0.5);
+ok(near(bnd.minX, 0.5) && near(bnd.maxX, 5.5) && near(bnd.minZ, 0.5) && near(bnd.maxZ, 3.5), '23a bounds inset by pad');
+ok(levelBoundsXZ([], 0.5) === null, '23b no walls -> null bounds');
+const cl = clampToBounds({ x: 99, z: -99 }, bnd);
+ok(near(cl.x, 5.5) && near(cl.z, 0.5), '23c point outside is clamped onto the inset box');
+const inside = clampToBounds({ x: 3, z: 2 }, bnd);
+ok(near(inside.x, 3) && near(inside.z, 2), '23d point inside is left untouched');
+ok(near(clampToBounds({ x: 3, z: 2 }, null).x, 3), '23e null bounds -> unclamped');
+// a footprint narrower than 2·pad collapses that axis to its midpoint (no inverted box)
+const thin = levelBoundsXZ([createWall({ x: 0, z: 0 }, { x: 0.4, z: 0 }, { id: 't' })], 0.5);
+ok(near(thin.minX, 0.2) && near(thin.maxX, 0.2), '23f over-inset axis collapses to its midpoint');
+
+// 24) stepWalk integrates movement; diagonals normalized; no keys -> no move
+const noMove = stepWalk({ x: 1, z: 1 }, 0, {}, 0.5);
+ok(near(noMove.x, 1) && near(noMove.z, 1), '24a no keys held -> position unchanged');
+// forward at yaw 0 for 1 s at WALK_SPEED moves -Z by WALK_SPEED
+const fwd1 = stepWalk({ x: 0, z: 0 }, 0, { forward: true }, 1);
+ok(near(fwd1.x, 0) && near(fwd1.z, -WALK_SPEED), '24b forward 1s moves -Z by walk speed');
+// strafing right at yaw 0 moves +X
+const right1 = stepWalk({ x: 0, z: 0 }, 0, { right: true }, 1);
+ok(near(right1.x, WALK_SPEED) && near(right1.z, 0), '24c strafe right moves +X');
+// forward+back cancel
+const cancel = stepWalk({ x: 5, z: 5 }, 1.1, { forward: true, back: true }, 1);
+ok(near(cancel.x, 5) && near(cancel.z, 5), '24d opposing keys cancel out');
+// diagonal (forward+right) is normalized: total distance still speed·dt, not √2·that
+const diag = stepWalk({ x: 0, z: 0 }, 0, { forward: true, right: true }, 1);
+ok(near(Math.hypot(diag.x, diag.z), WALK_SPEED), '24e diagonal move is normalized to walk speed');
+
+// 25) stepLook turns/tilts and clamps pitch just shy of vertical
+const l1 = stepLook({ yaw: 0, pitch: 0 }, 100, 0);
+ok(l1.yaw < 0, '25a dragging right turns the view (yaw decreases)');
+const l2 = stepLook({ yaw: 0, pitch: 0 }, 0, -100);
+ok(l2.pitch > 0, '25b dragging up looks up (pitch increases)');
+const l3 = stepLook({ yaw: 0, pitch: 0 }, 0, -1e6);   // yank far past vertical
+ok(near(l3.pitch, MAX_PITCH) && l3.pitch < Math.PI / 2, '25c pitch is clamped just shy of straight up');
+const l4 = stepLook({ yaw: 0, pitch: 0 }, 0, 1e6);
+ok(near(l4.pitch, -MAX_PITCH), '25d pitch is clamped just shy of straight down');
 
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'} — ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
