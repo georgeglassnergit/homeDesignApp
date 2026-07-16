@@ -27,6 +27,9 @@ import { createPlanView, snap, pointToSegment, nearestVertex, nearestWallHit } f
 import { ToolController } from '../edit/tools.js';
 import { sampleHome } from '../templates/sampleHome.js';
 import { blank, studio, STARTERS } from '../templates/starters.js';
+// S4 picker helpers — pure, must stay three-free/DOM-free (importing under Node is the guard).
+import { createDirtyTracker } from '../app/dirty.js';
+import { planThumbnailSVG, wallsBounds } from '../app/thumbnail.js';
 
 let pass = 0, fail = 0; const fails = [];
 function ok(cond, msg) { if (cond) { pass++; } else { fail++; fails.push(msg); console.log('  FAIL: ' + msg); } }
@@ -369,6 +372,41 @@ const l3 = stepLook({ yaw: 0, pitch: 0 }, 0, -1e6);   // yank far past vertical
 ok(near(l3.pitch, MAX_PITCH) && l3.pitch < Math.PI / 2, '25c pitch is clamped just shy of straight up');
 const l4 = stepLook({ yaw: 0, pitch: 0 }, 0, 1e6);
 ok(near(l4.pitch, -MAX_PITCH), '25d pitch is clamped just shy of straight down');
+
+// 26) S4 dirty tracker — pure model identity: current serialize vs. the clean baseline.
+//     This is what gates confirm-on-unsaved in the picker; a real edit flips it dirty and
+//     an undo-all flips it clean again, riding the Phase 1 lossless round-trip for free.
+_resetIds();
+const dh = studio();
+const dLevelId = dh.levels[0].id;
+const tracker = createDirtyTracker(serialize(dh));
+ok(tracker.isDirty(serialize(dh)) === false, '26a freshly-tracked project is clean');
+const dHist = new History(dh, { limit: 50 });
+dHist.execute(addWall(dLevelId, createWall({ x: 0, z: 0 }, { x: 1, z: 0 }, { id: 'dw' })));
+ok(tracker.isDirty(serialize(dh)) === true, '26b an edit makes it dirty');
+dHist.undo();
+ok(tracker.isDirty(serialize(dh)) === false, '26c undoing the edit makes it clean again (lossless)');
+dHist.execute(addWall(dLevelId, createWall({ x: 0, z: 0 }, { x: 2, z: 0 }, { id: 'dw2' })));
+ok(tracker.isDirty(serialize(dh)) === true, '26d dirty again after a new edit');
+tracker.markClean(serialize(dh));   // simulate loading/saving at this state
+ok(tracker.isDirty(serialize(dh)) === false, '26e markClean rebases the baseline to now');
+
+// 27) S4 plan thumbnail — pure SVG from wall centerlines (no Three.js, no DOM).
+_resetIds();
+const th = studio();
+const tb = wallsBounds(th);
+ok(tb && near(tb.minX, 0) && near(tb.maxX, 4) && near(tb.minZ, 0) && near(tb.maxZ, 3.5), '27a wallsBounds spans the studio footprint');
+ok(wallsBounds(blank()) === null, '27b blank project has no wall bounds');
+const svg = planThumbnailSVG(th);
+ok(svg.startsWith('<svg') && svg.trimEnd().endsWith('</svg>'), '27c thumbnail is a complete SVG');
+ok((svg.match(/<line/g) || []).length === th.levels[0].walls.length, '27d one line per wall (4)');
+const blankSvg = planThumbnailSVG(blank());
+ok(blankSvg.startsWith('<svg') && blankSvg.includes('<line'), '27e blank thumbnail renders an empty grid, not a crash');
+// every starter yields a valid, non-empty thumbnail with a one-line description
+for (const s of STARTERS) {
+  ok(typeof s.desc === 'string' && s.desc.length > 0, `27f starter ${s.id} has a description`);
+  ok(planThumbnailSVG(s.build()).startsWith('<svg'), `27g starter ${s.id} renders a thumbnail`);
+}
 
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'} — ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
