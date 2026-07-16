@@ -41,9 +41,10 @@ export function studio() {
   return createProject({ name: 'Studio', site: createSite({ width: 12, depth: 12 }), levels: [level] });
 }
 
-// The template picker's menu. `build()` returns a fresh Project each call.
+// The template picker's menu (S4). `build()` returns a fresh Project each call;
+// `desc` is the one-line blurb the start screen shows under each thumbnail.
 export const STARTERS = [
-  { id: 'blank',  label: 'Blank',           build: blank },
-  { id: 'studio', label: 'Studio (1 room)', build: studio },
-  { id: 'two',    label: 'Two-room home',   build: sampleHome },
+  { id: 'blank',  label: 'Blank',           desc: 'Empty level — draw your own walls from scratch.', build: blank },
+  { id: 'studio', label: 'Studio (1 room)', desc: 'One 4×3.5 m room with a front door and rear window.', build: studio },
+  { id: 'two',    label: 'Two-room home',   desc: 'Two rooms, 5 walls, 4 openings — the sample home.', build: sampleHome },
 ];

@@ -12,6 +12,8 @@ import { raycast, eventToNDC } from './edit/picking.js';
 import { createPlanCanvas } from './app/planCanvas.js';
 import { STARTERS } from './templates/starters.js';
 import { loadTemplate, setView } from './edit/commands.js';
+import { createDirtyTracker } from './app/dirty.js';
+import { planThumbnailSVG } from './app/thumbnail.js';
 
 const spike = { booted: false, built: false, sceneMeshes: 0, roundTripOk: false, counts: null, error: null };
 window.__app = spike;
@@ -147,20 +149,74 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
     }
     cameraButtons.forEach((b) => b.addEventListener('click', () => setCamera(b.dataset.camera)));
 
-    // --- starter dropdown (drives the existing loadTemplate command) ---
-    const tpl = $('tpl');
-    for (const s of STARTERS) { const o = document.createElement('option'); o.value = s.id; o.textContent = s.label; tpl.appendChild(o); }
-    tpl.value = 'two';
-    tpl.addEventListener('change', () => {
-      const s = STARTERS.find((x) => x.id === tpl.value); if (!s) return;
+    // --- S4 template picker: a start screen (shown on boot) + a reopenable overlay ---
+    // Loading a starter swaps the whole project via the undoable loadTemplate command,
+    // reframes both views, and resets the "clean" baseline (a freshly loaded template is
+    // not dirty). Reopening after edits confirms before discarding unsaved work. "Dirty"
+    // is pure model identity — the current serialized project vs. the last clean baseline —
+    // so it needs no flags scattered through the edit layer (see app/dirty.js).
+    const dirty = createDirtyTracker(serialize(project));
+
+    function loadStarter(s) {
       if (app.camera === CAMERA.WALK) setCamera(CAMERA.ORBIT);   // walls change → leave walk cleanly
       history.execute(loadTemplate(s.build()));
       controller.levelId = project.levels[0].id;
       app.selection = null;
       refresh();
+      dirty.markClean(serialize(project));   // a freshly loaded template is the new clean baseline
       plan.frameModel();
       viewer.frame(sceneBounds(home), 1.4);
-    });
+    }
+
+    const pickerEl = $('picker');
+    const noteEl = $('picker-note');
+    let pickerInitial = false;
+    const isDirty = () => dirty.isDirty(serialize(project));
+    function openPicker(initial = false) {
+      pickerInitial = initial;
+      noteEl.textContent = (!initial && isDirty()) ? 'You have unsaved changes — loading a template will discard them.' : '';
+      pickerEl.classList.add('open');
+    }
+    function closePicker() { pickerEl.classList.remove('open'); }
+
+    // confirmDiscard is injectable so the headless harness can drive the flow deterministically
+    let confirmDiscard = (name) => confirm(`Discard unsaved changes and load "${name}"?`);
+    function pick(id) {
+      const s = STARTERS.find((x) => x.id === id);
+      if (!s) return false;
+      // the initial start screen has nothing to lose; a re-open after edits confirms first
+      if (!pickerInitial && isDirty() && !confirmDiscard(s.label)) return false;   // keep current
+      loadStarter(s);
+      closePicker();
+      return true;
+    }
+
+    // Build the template cards once. Each thumbnail is a pure function of the starter's
+    // model (app/thumbnail.js) — novices pick a shape, not a name.
+    const grid = $('picker-grid');
+    for (const s of STARTERS) {
+      const card = document.createElement('button');
+      card.className = 'tpl-card'; card.dataset.id = s.id; card.title = s.desc;
+      card.innerHTML = `<div class="thumb">${planThumbnailSVG(s.build())}</div>`
+        + `<div class="name">${s.label}</div><div class="desc">${s.desc}</div>`;
+      card.addEventListener('click', () => pick(s.id));
+      grid.appendChild(card);
+    }
+    // Deferred onboarding tiles — RoomSketcher's blank / template / import / outsource
+    // pattern; import + outsource are Phase 3+, shown disabled so the roadmap reads.
+    for (const soon of [
+      { label: 'Import a plan', desc: 'Trace an uploaded floor plan.' },
+      { label: 'Outsource',     desc: 'Have your home drawn for you.' },
+    ]) {
+      const card = document.createElement('button');
+      card.className = 'tpl-card'; card.disabled = true;
+      card.innerHTML = `<div class="thumb">${planThumbnailSVG({ levels: [] })}</div>`
+        + `<div class="name">${soon.label}</div><div class="desc">${soon.desc}</div><div class="soon">Coming soon</div>`;
+      grid.appendChild(card);
+    }
+
+    $('new').addEventListener('click', () => openPicker(false));
+    $('picker-close').addEventListener('click', closePicker);
 
     // --- 3D-view selection via raycasting (VIEW-LAYER-CONTRACT §2) ---
     viewer.renderer.domElement.addEventListener('pointerdown', (e) => {
@@ -171,8 +227,9 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       plan.draw(); updateStatus();
     });
 
-    // --- keyboard: Esc ends a wall run, Del removes selection, Ctrl+Z/Y undo/redo ---
+    // --- keyboard: Esc closes the picker / ends a wall run, Del removes, Ctrl+Z/Y undo/redo ---
     addEventListener('keydown', (e) => {
+      if (pickerEl.classList.contains('open')) { if (e.key === 'Escape') closePicker(); return; }
       if (e.key === 'Escape') { if (app.camera === CAMERA.WALK) setCamera(CAMERA.ORBIT); else { controller.finishChain(); plan.draw(); } }
       else if (e.key === 'Delete' || e.key === 'Backspace') { controller.deleteSelection(); }
       else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? controller.redo() : controller.undo(); }
@@ -189,8 +246,19 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
     updateStatus();
     spike.built = true; spike.booted = true;
 
+    // Open the template picker as the start screen. The sample home is already built
+    // behind it, so "Keep current" simply dismisses to it; picking a card swaps in.
+    openPicker(true);
+
     // handles for the headless verification harness
-    Object.assign(window, { __viewer: viewer, __home: home, __project: () => project, __controller: controller, __plan: plan, __planView: planView, __history: history, __state: app, __applyView: applyView, __setView: (v) => { history.execute(setView(v)); refresh(); }, __walk: walk, __setCamera: setCamera });
+    Object.assign(window, {
+      __viewer: viewer, __home: home, __project: () => project, __controller: controller,
+      __plan: plan, __planView: planView, __history: history, __state: app, __applyView: applyView,
+      __setView: (v) => { history.execute(setView(v)); refresh(); }, __walk: walk, __setCamera: setCamera,
+      // S4 picker handles
+      __picker: pickerEl, __openPicker: openPicker, __closePicker: closePicker, __pick: pick,
+      __isDirty: isDirty, __setConfirm: (fn) => { confirmDiscard = fn; },
+    });
     window.__selftest = () => { const j = serialize(project); const p = deserialize(j); return { valid: validateProject(p).ok, lossless: serialize(p) === j, counts: projectCounts(p) }; };
   } catch (e) {
     spike.error = String((e && e.stack) || e);
