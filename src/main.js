@@ -4,7 +4,8 @@ import { buildScene, sceneBounds, rebuildGeometry } from './build/sceneBuilder.j
 import { serialize, deserialize, validateProject, projectCounts } from './core/model.js';
 import { createAppState, availableTools, MODE, TOOL, VIEW, CAMERA } from './app/state.js';
 import { cutawayHiddenWalls } from './viewer/cutaway.js';
-import { formatLength } from './core/units.js';
+import { formatLength, UNIT } from './core/units.js';
+import { describeSelection, buildDimensionEdit } from './app/inspector.js';
 import { History } from './edit/history.js';
 import { ToolController } from './edit/tools.js';
 import { createPlanView } from './edit/planView.js';
@@ -59,7 +60,7 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       rebuild: () => refresh(),        // set below (function hoisted)
     });
 
-    const plan = createPlanCanvas(planCanvasEl, { project, controller, planView, state: app, levelId: project.levels[0].id });
+    const plan = createPlanCanvas(planCanvasEl, { project, controller, planView, state: app, levelId: project.levels[0].id, onSelect: () => renderInspector() });
 
     // A model edit re-derives the 3D geometry and redraws the plan + status. The model
     // is the single source of truth; both views are pure functions of it.
@@ -70,6 +71,7 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       // keep the view seam in sync (undo/redo/template-load may change meta.view)
       app.view = (project.meta && project.meta.view) || VIEW.EXTERIOR;
       syncViewButtons();
+      renderInspector();   // selection may have changed (undo/redo/delete/template swap)
       updateStatus();
     }
 
@@ -99,6 +101,77 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
         `<span class="muted">tool:</span> ${app.activeTool} · <span class="muted">cam:</span> ${app.camera} · <span class="muted">mode:</span> ${app.mode} · ${availableTools(app.mode).length} tools · undo ${history.undoStack.length}`
       );
     }
+
+    // --- selection inspector + Pro-mode exact-dimension entry (the Simple/Pro seam, live) ---
+    // The inspector is a pure descriptor of the selection's dimensions (app/inspector.js).
+    // Simple mode shows a read-only measurement readout; Pro turns each field into an exact-
+    // entry input parsed via units.js. A committed edit runs through history, is re-validated
+    // (rejecting a value that no longer fits — e.g. an opening wider than its wall), and rolls
+    // back cleanly on failure so the lossless save round-trip is never broken.
+    const insBox = $('inspector');
+    let committingField = false;   // guards the re-render blur from re-committing
+
+    function renderInspector() {
+      if (!insBox) return;
+      const desc = describeSelection(project, app.selection, { mode: app.mode, units: app.units });
+      if (!desc) {
+        insBox.className = '';
+        insBox.innerHTML = '<div class="ins-empty">No selection — click a wall or opening</div>';
+        return;
+      }
+      const rows = desc.fields.map((f) => desc.editable
+        ? `<label class="ins-row"><span>${f.label}</span>`
+          + `<input class="ins-field" data-key="${f.key}" value="${f.text}" spellcheck="false" autocomplete="off"></label>`
+        : `<div class="ins-row"><span>${f.label}</span><b>${f.text}</b></div>`).join('');
+      const foot = desc.editable
+        ? `<div class="ins-hint">Type an exact size (e.g. 3.2m or 10'6") and press Enter</div>`
+        : '<div class="ins-hint">Switch to <b>Pro</b> to edit exact dimensions</div>';
+      insBox.className = desc.editable ? 'editable' : '';
+      insBox.innerHTML = `<div class="ins-title">${desc.title}</div>${rows}${foot}<div class="ins-msg" id="ins-msg"></div>`;
+      if (desc.editable) {
+        insBox.querySelectorAll('.ins-field').forEach((inp) => {
+          inp.addEventListener('keydown', (e) => {
+            e.stopPropagation();   // keep Del/Ctrl-Z etc. from firing while typing a size
+            if (e.key === 'Enter') { e.preventDefault(); commitField(inp.dataset.key, inp.value); }
+          });
+          inp.addEventListener('blur', () => commitField(inp.dataset.key, inp.value));
+        });
+      }
+    }
+
+    function commitField(key, raw) {
+      if (committingField) return;   // re-render on commit blurs the input; don't loop
+      committingField = true;
+      try {
+        const res = buildDimensionEdit(project, app.selection, key, raw, { units: app.units });
+        const msg = $('ins-msg');
+        if (res.error) { if (msg) msg.textContent = res.error; return; }
+        history.execute(res.command);
+        const val = validateProject(project);
+        if (!val.ok) {                         // out of range (e.g. no longer fits) — roll back
+          res.command.undo(project);
+          history.undoStack.pop();             // drop it from history entirely
+          refresh();
+          const m2 = $('ins-msg'); if (m2) m2.textContent = val.errors[0];
+          return;
+        }
+        refresh();                             // rebuild 3D + plan + re-render inspector
+      } finally { committingField = false; }
+    }
+
+    // --- Simple / Pro mode toggle (the single gate the whole UI reads from) ---
+    const modeButtons = [...document.querySelectorAll('#modes button')];
+    const syncModeButtons = () => modeButtons.forEach((b) => b.classList.toggle('active', b.dataset.mode === app.mode));
+    modeButtons.forEach((b) => b.addEventListener('click', () => {
+      app.setMode(b.dataset.mode); syncModeButtons(); renderInspector(); updateStatus();
+    }));
+
+    // --- display units toggle (m ↔ ft-in) — storage stays metric; this is display only ---
+    const unitButtons = [...document.querySelectorAll('#units button')];
+    const syncUnitButtons = () => unitButtons.forEach((b) => b.classList.toggle('active', b.dataset.units === app.units));
+    unitButtons.forEach((b) => b.addEventListener('click', () => {
+      app.setUnits(b.dataset.units); syncUnitButtons(); renderInspector();
+    }));
 
     // --- toolbar wiring ---
     const toolButtons = [...document.querySelectorAll('#tools button')];
@@ -224,7 +297,7 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       if (app.activeTool !== TOOL.SELECT) return;   // don't fight orbit while drawing
       const hitObj = raycast(eventToNDC(e, viewer.renderer.domElement), viewer.camera, home);
       app.selection = hitObj && hitObj.modelId ? { kind: hitObj.kind === 'floor' ? 'room' : hitObj.kind, id: hitObj.modelId } : null;
-      plan.draw(); updateStatus();
+      plan.draw(); renderInspector(); updateStatus();
     });
 
     // --- keyboard: Esc closes the picker / ends a wall run, Del removes, Ctrl+Z/Y undo/redo ---
@@ -243,6 +316,9 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
     syncToolButtons();
     syncViewButtons();
     syncCameraButtons();
+    syncModeButtons();
+    syncUnitButtons();
+    renderInspector();
     updateStatus();
     spike.built = true; spike.booted = true;
 
@@ -258,6 +334,12 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       // S4 picker handles
       __picker: pickerEl, __openPicker: openPicker, __closePicker: closePicker, __pick: pick,
       __isDirty: isDirty, __setConfirm: (fn) => { confirmDiscard = fn; },
+      // inspector / Simple-Pro seam handles (deterministic driving from the headless harness)
+      __inspect: () => describeSelection(project, app.selection, { mode: app.mode, units: app.units }),
+      __commitField: (key, raw) => { commitField(key, raw); return $('ins-msg') ? $('ins-msg').textContent : ''; },
+      __setMode: (m) => { app.setMode(m); syncModeButtons(); renderInspector(); updateStatus(); },
+      __setUnits: (u) => { app.setUnits(u); syncUnitButtons(); renderInspector(); },
+      __select: (sel) => { app.selection = sel; plan.draw(); renderInspector(); updateStatus(); },
     });
     window.__selftest = () => { const j = serialize(project); const p = deserialize(j); return { valid: validateProject(p).ok, lossless: serialize(p) === j, counts: projectCounts(p) }; };
   } catch (e) {

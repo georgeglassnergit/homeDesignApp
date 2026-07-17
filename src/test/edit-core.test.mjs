@@ -11,7 +11,10 @@ import {
 } from '../core/model.js';
 import { parseLength, formatLength, UNIT } from '../core/units.js';
 import { isAvailable, availableTools, createAppState, MODE, TOOL, VIEW } from '../app/state.js';
-import { addWall, moveWallVertex, removeWall, addOpening, removeOpening, loadTemplate, composite, setView } from '../edit/commands.js';
+import { addWall, moveWallVertex, removeWall, addOpening, removeOpening, loadTemplate, composite, setView, resizeWall, resizeOpening } from '../edit/commands.js';
+// Selection inspector — pure descriptor + edit builder (the Simple/Pro exact-dimension seam).
+// Must stay three-free / DOM-free; importing under Node is itself the separation guard.
+import { describeSelection, buildDimensionEdit } from '../app/inspector.js';
 import { History } from '../edit/history.js';
 // S5 cutaway decision — pure math, must stay three-free (importing under Node is the guard).
 import { cutawayHiddenWalls, wallsCenterXZ } from '../viewer/cutaway.js';
@@ -407,6 +410,70 @@ for (const s of STARTERS) {
   ok(typeof s.desc === 'string' && s.desc.length > 0, `27f starter ${s.id} has a description`);
   ok(planThumbnailSVG(s.build()).startsWith('<svg'), `27g starter ${s.id} renders a thumbnail`);
 }
+
+// 28) Pro-seam exact-dimension editing — resize commands (lossless) + inspector descriptor.
+_resetIds();
+const rp = sampleHome();
+const rLevel = rp.levels[0];
+const rWall = rLevel.walls[0];
+const rBaseline = serialize(rp);
+const rHist = new History(rp, { limit: 50 });
+
+// resizeWall: length moves endpoint b along the a→b axis, keeping a fixed; thickness/height set.
+const wLen0 = wallLength(rWall);
+rHist.execute(resizeWall(rLevel.id, rWall.id, { length: wLen0 + 1, thickness: 0.2, height: 3.0 }));
+ok(near(wallLength(rWall), wLen0 + 1), '28a resizeWall length moves endpoint b to the new length');
+ok(near(rWall.a.x, rLevel.walls[0].a.x) && near(rWall.thickness, 0.2) && near(rWall.height, 3.0), '28b resizeWall sets thickness+height, keeps endpoint a');
+ok(validateProject(rp).ok, '28c project still valid after resizeWall');
+rHist.undo();
+ok(serialize(rp) === rBaseline, '28d resizeWall undo is byte-identical (lossless)');
+
+// resizeOpening: width/sill/offset set; captured+restored losslessly.
+const rOpening = rLevel.openings[0];
+const rBaseline2 = serialize(rp);
+rHist.execute(resizeOpening(rLevel.id, rOpening.id, { width: 1.0, sill: 0.1 }));
+ok(near(rOpening.width, 1.0) && near(rOpening.sill, 0.1), '28e resizeOpening sets width+sill');
+rHist.undo();
+ok(serialize(rp) === rBaseline2, '28f resizeOpening undo is byte-identical (lossless)');
+
+// degenerate guard + missing-id error paths
+ok(threw(() => resizeWall(rLevel.id, 'nope').do(rp)), '28g resizeWall throws on unknown wall id');
+ok(threw(() => resizeOpening(rLevel.id, 'nope').do(rp)), '28h resizeOpening throws on unknown opening id');
+
+// describeSelection — Simple mode is read-only, Pro is editable; formats per display units.
+const selWall = { kind: 'wall', id: rWall.id };
+const dSimple = describeSelection(rp, selWall, { mode: MODE.SIMPLE, units: UNIT.METRIC });
+ok(dSimple && dSimple.editable === false && dSimple.title === 'Wall', '28i wall describes read-only in Simple');
+ok(dSimple.fields.map(f => f.key).join(',') === 'length,thickness,height', '28j wall exposes length/thickness/height');
+const dPro = describeSelection(rp, selWall, { mode: MODE.PRO, units: UNIT.METRIC });
+ok(dPro.editable === true, '28k wall describes editable in Pro');
+const dImp = describeSelection(rp, selWall, { mode: MODE.PRO, units: UNIT.IMPERIAL });
+ok(dImp.fields[0].text.includes('′'), '28l imperial units render feet-and-inches text');
+const dOpen = describeSelection(rp, { kind: 'opening', id: rOpening.id }, { mode: MODE.PRO });
+ok(dOpen && ['Door', 'Window'].includes(dOpen.title) && dOpen.fields.some(f => f.key === 'sill'), '28m opening describes width/height/sill/offset');
+ok(describeSelection(rp, null) === null && describeSelection(rp, { kind: 'room', id: 'x' }) === null, '28n empty/room selection describes as null');
+
+// buildDimensionEdit — parses input, guards range, returns an undoable command.
+const eGood = buildDimensionEdit(rp, selWall, 'thickness', '0.15', { units: UNIT.METRIC });
+ok(eGood.command && near(eGood.meters, 0.15), '28o buildDimensionEdit parses metric input into a command');
+const eImp = buildDimensionEdit(rp, selWall, 'height', `8'0"`, { units: UNIT.IMPERIAL });
+ok(eImp.command && near(eImp.meters, 8 * 12 * 0.0254), `28p buildDimensionEdit parses 8'0" to 2.4384 m`);
+ok(buildDimensionEdit(rp, selWall, 'thickness', 'wat').error, '28q unparseable input returns an error');
+ok(buildDimensionEdit(rp, selWall, 'thickness', '0').error, '28r zero thickness (positive field) is rejected');
+ok(buildDimensionEdit(rp, { kind: 'opening', id: rOpening.id }, 'sill', '-1', {}).error, '28s negative sill (non-negative field) is rejected');
+// applying a good edit through history keeps the project valid + lossless-undoable
+const rBaseline3 = serialize(rp);
+rHist.execute(buildDimensionEdit(rp, selWall, 'thickness', '0.18').command);
+ok(near(rWall.thickness, 0.18) && validateProject(rp).ok, '28t applied dimension edit mutates the model and validates');
+rHist.undo();
+ok(serialize(rp) === rBaseline3, '28u dimension edit undo is byte-identical (lossless)');
+// an out-of-range edit (opening wider than its wall) fails validation, so the UI rolls it back
+const wallLenForOpening = wallLength(rLevel.walls.find(w => w.id === rOpening.wallId));
+const eTooWide = buildDimensionEdit(rp, { kind: 'opening', id: rOpening.id }, 'width', String(wallLenForOpening + 2), {});
+eTooWide.command.do(rp);
+ok(!validateProject(rp).ok, '28v over-wide opening is caught by validateProject (UI rolls back)');
+eTooWide.command.undo(rp);
+ok(validateProject(rp).ok, '28w rolling the bad edit back restores a valid project');
 
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'} — ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

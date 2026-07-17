@@ -42,6 +42,29 @@
       #hud b { font-family: Georgia, serif; }
       #hud .ok { color: #2e7d32; } #hud .err { color: #c62828; } #hud .muted { color: #8a7c6c; }
 
+      /* Selection inspector — the Simple/Pro seam made visible. Read-only measurements in
+         Simple; exact-entry inputs (parsed via units.js) in Pro. */
+      #inspector {
+        position: absolute; left: 12px; top: 12px; z-index: 10;
+        background: rgba(255,255,255,.9); backdrop-filter: blur(4px);
+        border: 1px solid #cbb; border-radius: 10px; padding: 10px 12px;
+        font-size: 12px; line-height: 1.5; width: 190px;
+      }
+      #inspector.editable { border-color: #6b5b4b; }
+      #inspector .ins-title { font-family: Georgia, serif; font-weight: 700; font-size: 14px; margin-bottom: 6px; }
+      #inspector .ins-empty { color: #8a7c6c; }
+      #inspector .ins-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 3px 0; }
+      #inspector .ins-row span { color: #7a6c5d; }
+      #inspector .ins-row b { font-variant-numeric: tabular-nums; }
+      #inspector .ins-field {
+        font: inherit; width: 92px; padding: 3px 6px; text-align: right;
+        border: 1px solid #c3ab97; border-radius: 6px; background: #fff; color: #2b2622;
+        font-variant-numeric: tabular-nums;
+      }
+      #inspector .ins-field:focus { outline: 2px solid #c9a; border-color: #6b5b4b; }
+      #inspector .ins-hint { color: #8a7c6c; font-size: 10.5px; margin-top: 7px; line-height: 1.35; }
+      #inspector .ins-msg { color: #c62828; font-size: 11px; margin-top: 4px; min-height: 1px; }
+
       /* S4 start-screen template picker — a full-panel overlay shown on boot and
          reopenable from the toolbar. Picking a card instantiates a starter Project. */
       #picker {
@@ -109,6 +132,15 @@
           <button id="undo" title="Undo (Ctrl+Z)">Undo</button>
           <button id="redo" title="Redo (Ctrl+Y)">Redo</button>
         </div>
+        <div class="sep"></div>
+        <div class="group" id="modes" title="Simple keeps it novice-friendly; Pro reveals exact-dimension entry">
+          <button data-mode="simple" class="active" title="Novice-friendly toolset">Simple</button>
+          <button data-mode="pro" title="Reveal exact-dimension entry">Pro</button>
+        </div>
+        <div class="group" id="units" title="Display units (storage stays metric)">
+          <button data-units="metric" class="active" title="Metres / centimetres">m</button>
+          <button data-units="imperial" title="Feet &amp; inches">ft</button>
+        </div>
         <span class="hint" id="toolhint">Select a starter or draw a room</span>
       </div>
       <div id="main">
@@ -117,6 +149,7 @@
           <div id="plan-label">PLAN · top-down · 1&nbsp;m grid</div>
         </div>
         <div id="app">
+          <div id="inspector"><div class="ins-empty">No selection — click a wall or opening</div></div>
           <div id="hud"><b>Phase 2</b><div id="status">booting…</div></div>
         </div>
       </div>

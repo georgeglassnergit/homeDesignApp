@@ -4,8 +4,9 @@
 // model + planView mapping, and every edit goes through the controller's commands.
 import { wallLength } from '../core/model.js';
 
-export function createPlanCanvas(canvas, { project, controller, planView, state, levelId }) {
+export function createPlanCanvas(canvas, { project, controller, planView, state, levelId, onSelect }) {
   const ctx = canvas.getContext('2d');
+  const notifySelect = () => { if (onSelect) onSelect(); };
   const level = () => project.levels.find((l) => l.id === levelId) || project.levels[0];
 
   function resize() {
@@ -114,9 +115,9 @@ export function createPlanCanvas(canvas, { project, controller, planView, state,
     const r = canvas.getBoundingClientRect();
     return planView.screenToWorld(e.clientX - r.left, e.clientY - r.top);
   };
-  canvas.addEventListener('pointerdown', (e) => { canvas.setPointerCapture(e.pointerId); controller.pointerDown(worldAt(e)); draw(); });
+  canvas.addEventListener('pointerdown', (e) => { canvas.setPointerCapture(e.pointerId); controller.pointerDown(worldAt(e)); draw(); notifySelect(); });
   canvas.addEventListener('pointermove', (e) => { controller.pointerMove(worldAt(e)); draw(); });
-  canvas.addEventListener('pointerup', (e) => { controller.pointerUp(worldAt(e)); draw(); });
+  canvas.addEventListener('pointerup', (e) => { controller.pointerUp(worldAt(e)); draw(); notifySelect(); });
   canvas.addEventListener('dblclick', () => { controller.finishChain(); draw(); });
   canvas.addEventListener('contextmenu', (e) => { e.preventDefault(); controller.finishChain(); draw(); });
 
