@@ -3,6 +3,7 @@
 // tools. This is the single gate the whole UI reads from (progressive disclosure).
 
 import { UNIT } from '../core/units.js';
+import { defaultSnapSettings } from '../edit/snapping.js';
 
 export const MODE = Object.freeze({ SIMPLE: 'simple', PRO: 'pro' });
 
@@ -55,10 +56,20 @@ export function createAppState(opts = {}) {
     activeTool: opts.activeTool || TOOL.SELECT,   // S1 tool state machine
     view: opts.view || VIEW.EXTERIOR,             // S5 exterior <-> cutaway (view pref)
     camera: opts.camera || CAMERA.ORBIT,          // S6 orbit <-> walk
+    snap: opts.snap || defaultSnapSettings(),     // Pro-seam snapping/constraint settings
     setMode(m) { this.mode = m; },
     setUnits(u) { this.units = u; },
     setTool(t) { this.activeTool = t; },
     setView(v) { this.view = v; },
     setCamera(c) { this.camera = c; },
+    // Deep-merge a partial snap update (e.g. { grid: { on: false } }) so the UI can flip a
+    // single field without restating the whole tree. View-only pref — never serialized.
+    setSnap(partial) {
+      const s = this.snap;
+      for (const group of ['grid', 'vertex', 'angle']) {
+        if (partial && partial[group]) s[group] = Object.assign({}, s[group], partial[group]);
+      }
+      return this.snap;
+    },
   };
 }

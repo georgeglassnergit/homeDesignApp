@@ -7,9 +7,8 @@
 import { TOOL } from '../app/state.js';
 import { createWall, createOpening, wallLength, findLevel, findWall } from '../core/model.js';
 import { addWall, moveWallVertex, removeWall, addOpening, removeOpening, composite } from './commands.js';
-import { snap as gridSnap } from './planView.js';
+import { snapPoint } from './snapping.js';
 
-const MODE_SIMPLE = 'simple';
 const MIN_WALL = 0.05;        // ignore accidental zero-length wall clicks (m)
 const VERTEX_TOL_PX = 12;     // grab radius for corner drag
 const WALL_TOL_PX = 12;       // click radius for selecting / placing on a wall
@@ -45,8 +44,15 @@ export class ToolController {
     return this.state.activeTool === name;
   }
 
-  // Simple mode snaps to the grid; Pro leaves the raw point (exact entry handled elsewhere).
-  _snap(world) { return this.state.mode === MODE_SIMPLE ? gridSnap(world, 0.1) : world; }
+  // Snap a pointer position through the active snapping/constraint settings (the Pro-seam
+  // "snapping-constraints"). `anchor` is the point a segment is drawn/dragged from (for angle
+  // snap); `excludeKeys` is the dragged corner's endpoints, so it never snaps onto itself.
+  // Settings are data — Simple keeps safe defaults, Pro edits them live. Returns { x, z }.
+  _snap(world, { anchor = null, excludeKeys = null } = {}) {
+    const walls = this.level ? this.level.walls : [];
+    const p = snapPoint(world, { settings: this.state.snap, walls, anchor, excludeKeys });
+    return { x: p.x, z: p.z };
+  }
 
   _emit(msg) { this.state.message = msg; this.onMessage(msg); }
 
@@ -61,8 +67,8 @@ export class ToolController {
   }
 
   pointerMove(world) {
-    if (this._drag) { this._drag.to = this._snap(world); this.preview = this._drag.to; return; }
-    if (this._chain) { this.preview = this._snap(world); return; }
+    if (this._drag) { this._drag.to = this._snap(world, { excludeKeys: this._drag.excludeKeys }); this.preview = this._drag.to; return; }
+    if (this._chain) { this.preview = this._snap(world, { anchor: this._chain.prev }); return; }
     this.preview = null;
   }
 
@@ -77,7 +83,9 @@ export class ToolController {
     if (vhit) {
       // grab EVERY wall endpoint sharing this corner so both adjoining walls move together
       const verts = this.planView.verticesAt(vhit.point, walls);
-      this._drag = { verts, from: { x: vhit.point.x, z: vhit.point.z }, to: { x: vhit.point.x, z: vhit.point.z } };
+      // exclude the grabbed endpoints from vertex-snapping so the corner never snaps to itself
+      const excludeKeys = new Set(verts.map((v) => v.wallId + ':' + v.end));
+      this._drag = { verts, excludeKeys, from: { x: vhit.point.x, z: vhit.point.z }, to: { x: vhit.point.x, z: vhit.point.z } };
       this.state.selection = { kind: 'wall', id: vhit.wallId };
       return;
     }
@@ -86,7 +94,7 @@ export class ToolController {
   }
 
   _commitDrag(world) {
-    const to = this._snap(world);
+    const to = this._snap(world, { excludeKeys: this._drag.excludeKeys });
     const { verts, from } = this._drag;
     this._drag = null; this.preview = null;
     if (Math.hypot(to.x - from.x, to.z - from.z) < 1e-4) return; // no real move -> no command
@@ -97,7 +105,8 @@ export class ToolController {
 
   // --- draw a chain of walls (click each corner; Esc / finishChain ends it) ---
   _drawWallDown(world) {
-    const p = this._snap(world);
+    // first corner has no anchor; later corners angle-snap relative to the previous one
+    const p = this._chain ? this._snap(world, { anchor: this._chain.prev }) : this._snap(world);
     if (!this._chain) { this._chain = { prev: p }; this.preview = p; return; }
     const prev = this._chain.prev;
     if (Math.hypot(p.x - prev.x, p.z - prev.z) < MIN_WALL) return; // ignore duplicate click

@@ -2,7 +2,7 @@ import { createViewer } from './viewer/viewer.js';
 import { createWalkController } from './viewer/walkCamera.js';
 import { buildScene, sceneBounds, rebuildGeometry } from './build/sceneBuilder.js';
 import { serialize, deserialize, validateProject, projectCounts } from './core/model.js';
-import { createAppState, availableTools, MODE, TOOL, VIEW, CAMERA } from './app/state.js';
+import { createAppState, availableTools, isAvailable, MODE, TOOL, VIEW, CAMERA } from './app/state.js';
 import { cutawayHiddenWalls } from './viewer/cutaway.js';
 import { formatLength, UNIT } from './core/units.js';
 import { describeSelection, buildDimensionEdit } from './app/inspector.js';
@@ -159,11 +159,63 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       } finally { committingField = false; }
     }
 
+    // --- Pro-seam snapping / constraint settings (the "snapping-constraints" feature) ---
+    // Before this, Simple grid-snapped and Pro used the raw point (no snap). Now all three
+    // constraints (grid / vertex / angle) are data-driven settings in app.snap. The panel is
+    // the single Simple/Pro gate — hidden in Simple, revealed in Pro — and edits app.snap
+    // live, then redraws the plan. It's a view pref: nothing here touches the save format.
+    const snapGroup = $('snap-group'), snapBtn = $('snap-btn'), snapPanel = $('snap-panel');
+    const snapEls = {
+      grid: $('snap-grid'), gridStep: $('snap-grid-step'),
+      vertex: $('snap-vertex'), angle: $('snap-angle'), angleStep: $('snap-angle-step'),
+    };
+    function syncSnapControls() {
+      const s = app.snap;
+      snapEls.grid.checked = s.grid.on;
+      snapEls.gridStep.value = s.grid.step;
+      snapEls.gridStep.disabled = !s.grid.on;
+      snapEls.vertex.checked = s.vertex.on;
+      snapEls.angle.checked = s.angle.on;
+      snapEls.angleStep.value = String(s.angle.stepDeg);
+      snapEls.angleStep.disabled = !s.angle.on;
+      // reflect any active constraint on the toolbar button
+      snapBtn.classList.toggle('armed', s.grid.on || s.vertex.on || s.angle.on);
+    }
+    function applySnapFromControls() {
+      app.setSnap({
+        grid: { on: snapEls.grid.checked, step: parseFloat(snapEls.gridStep.value) },
+        vertex: { on: snapEls.vertex.checked },
+        angle: { on: snapEls.angle.checked, stepDeg: parseFloat(snapEls.angleStep.value) },
+      });
+      syncSnapControls();
+      plan.draw();
+    }
+    Object.values(snapEls).forEach((el) => el.addEventListener('change', applySnapFromControls));
+    function positionSnapPanel() {
+      const r = snapBtn.getBoundingClientRect();
+      snapPanel.style.left = Math.max(8, Math.min(r.left, innerWidth - 248)) + 'px';
+      snapPanel.style.top = (r.bottom + 6) + 'px';
+    }
+    function toggleSnapPanel(force) {
+      const open = force === undefined ? !snapPanel.classList.contains('open') : force;
+      if (open) { syncSnapControls(); positionSnapPanel(); }
+      snapPanel.classList.toggle('open', open);
+    }
+    snapBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleSnapPanel(); });
+    snapPanel.addEventListener('click', (e) => e.stopPropagation());
+    addEventListener('click', () => toggleSnapPanel(false));   // click-away closes
+    // The seam: the snap controls appear only when snapping-constraints is available (Pro).
+    function syncSnapSeam() {
+      const on = isAvailable('snapping-constraints', app.mode);
+      snapGroup.classList.toggle('on', on);
+      if (!on) toggleSnapPanel(false);
+    }
+
     // --- Simple / Pro mode toggle (the single gate the whole UI reads from) ---
     const modeButtons = [...document.querySelectorAll('#modes button')];
     const syncModeButtons = () => modeButtons.forEach((b) => b.classList.toggle('active', b.dataset.mode === app.mode));
     modeButtons.forEach((b) => b.addEventListener('click', () => {
-      app.setMode(b.dataset.mode); syncModeButtons(); renderInspector(); updateStatus();
+      app.setMode(b.dataset.mode); syncModeButtons(); syncSnapSeam(); renderInspector(); updateStatus();
     }));
 
     // --- display units toggle (m ↔ ft-in) — storage stays metric; this is display only ---
@@ -318,6 +370,7 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
     syncCameraButtons();
     syncModeButtons();
     syncUnitButtons();
+    syncSnapSeam();
     renderInspector();
     updateStatus();
     spike.built = true; spike.booted = true;
@@ -337,8 +390,11 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       // inspector / Simple-Pro seam handles (deterministic driving from the headless harness)
       __inspect: () => describeSelection(project, app.selection, { mode: app.mode, units: app.units }),
       __commitField: (key, raw) => { commitField(key, raw); return $('ins-msg') ? $('ins-msg').textContent : ''; },
-      __setMode: (m) => { app.setMode(m); syncModeButtons(); renderInspector(); updateStatus(); },
+      __setMode: (m) => { app.setMode(m); syncModeButtons(); syncSnapSeam(); renderInspector(); updateStatus(); },
       __setUnits: (u) => { app.setUnits(u); syncUnitButtons(); renderInspector(); },
+      // snapping/constraint seam handles (deterministic driving from the headless harness)
+      __snap: () => app.snap, __setSnap: (partial) => { app.setSnap(partial); syncSnapControls(); plan.draw(); return app.snap; },
+      __snapSeamVisible: () => snapGroup.classList.contains('on'),
       __select: (sel) => { app.selection = sel; plan.draw(); renderInspector(); updateStatus(); },
     });
     window.__selftest = () => { const j = serialize(project); const p = deserialize(j); return { valid: validateProject(p).ok, lossless: serialize(p) === j, counts: projectCounts(p) }; };
