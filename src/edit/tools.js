@@ -8,6 +8,7 @@ import { TOOL } from '../app/state.js';
 import { createWall, createOpening, wallLength, findLevel, findWall } from '../core/model.js';
 import { addWall, moveWallVertex, removeWall, addOpening, removeOpening, composite } from './commands.js';
 import { snap as gridSnap } from './planView.js';
+import { snapPoint } from './snapping.js';
 
 const MODE_SIMPLE = 'simple';
 const MIN_WALL = 0.05;        // ignore accidental zero-length wall clicks (m)
@@ -31,6 +32,7 @@ export class ToolController {
     this._chain = null;    // in-progress wall polyline: { prev:{x,z} }
     this._drag = null;     // in-progress corner drag: { verts:[{wallId,end}], from:{x,z}, to:{x,z} }
     this.preview = null;   // rubber-band point for the plan renderer (view-only)
+    this.snapState = null; // which constraints fired on the last snap (for the plan indicator)
   }
 
   // The active level, resolved live so a template swap (which replaces the level and
@@ -41,12 +43,34 @@ export class ToolController {
   setTool(name) {
     // Simple/Pro seam: only switch to a tool available in the current mode.
     this.state.setTool(name);
-    this._chain = null; this._drag = null; this.preview = null;
+    this._chain = null; this._drag = null; this.preview = null; this.snapState = null;
     return this.state.activeTool === name;
   }
 
-  // Simple mode snaps to the grid; Pro leaves the raw point (exact entry handled elsewhere).
-  _snap(world) { return this.state.mode === MODE_SIMPLE ? gridSnap(world, 0.1) : world; }
+  // Simple mode keeps the fixed grid snap (S2). Pro mode routes through the configurable
+  // snapping/constraint settings (grid step / angle-lock / endpoint) — the single place the
+  // Pro seam's snapping behavior lives. `ctx` carries the angle anchor + endpoint candidates.
+  _snap(world, ctx = {}) {
+    if (this.state.mode === MODE_SIMPLE) { this.snapState = { grid: true }; return gridSnap(world, 0.1); }
+    const res = snapPoint(world, this.state.snap, ctx);
+    this.snapState = res.snapped;
+    return res.point;
+  }
+
+  // Existing wall corners the drawing point may snap onto, minus any endpoint being dragged
+  // (so a corner never snaps to itself). Deduped so shared corners count once.
+  _vertices(exclude = []) {
+    const walls = this.level ? this.level.walls : [];
+    const ex = new Set(exclude.map((v) => v.wallId + ':' + v.end));
+    const out = [], seen = new Set();
+    for (const w of walls) for (const end of ['a', 'b']) {
+      if (ex.has(w.id + ':' + end)) continue;
+      const v = w[end], key = v.x.toFixed(4) + ',' + v.z.toFixed(4);
+      if (seen.has(key)) continue; seen.add(key);
+      out.push({ x: v.x, z: v.z });
+    }
+    return out;
+  }
 
   _emit(msg) { this.state.message = msg; this.onMessage(msg); }
 
@@ -61,9 +85,11 @@ export class ToolController {
   }
 
   pointerMove(world) {
-    if (this._drag) { this._drag.to = this._snap(world); this.preview = this._drag.to; return; }
-    if (this._chain) { this.preview = this._snap(world); return; }
-    this.preview = null;
+    // A corner drag snaps to grid/endpoint (no angle-lock — there's no draw direction).
+    if (this._drag) { this._drag.to = this._snap(world, { vertices: this._vertices(this._drag.verts) }); this.preview = this._drag.to; return; }
+    // Drawing a chain angle-locks each segment to the previous corner and can close onto a vertex.
+    if (this._chain) { this.preview = this._snap(world, { anchor: this._chain.prev, vertices: this._vertices() }); return; }
+    this.snapState = null; this.preview = null;
   }
 
   pointerUp(world) {
@@ -86,7 +112,7 @@ export class ToolController {
   }
 
   _commitDrag(world) {
-    const to = this._snap(world);
+    const to = this._snap(world, { vertices: this._vertices(this._drag.verts) });
     const { verts, from } = this._drag;
     this._drag = null; this.preview = null;
     if (Math.hypot(to.x - from.x, to.z - from.z) < 1e-4) return; // no real move -> no command
@@ -97,7 +123,7 @@ export class ToolController {
 
   // --- draw a chain of walls (click each corner; Esc / finishChain ends it) ---
   _drawWallDown(world) {
-    const p = this._snap(world);
+    const p = this._snap(world, { anchor: this._chain ? this._chain.prev : null, vertices: this._vertices() });
     if (!this._chain) { this._chain = { prev: p }; this.preview = p; return; }
     const prev = this._chain.prev;
     if (Math.hypot(p.x - prev.x, p.z - prev.z) < MIN_WALL) return; // ignore duplicate click
@@ -107,7 +133,7 @@ export class ToolController {
     this._chain.prev = p; this.preview = p;
   }
 
-  finishChain() { this._chain = null; this.preview = null; }
+  finishChain() { this._chain = null; this.preview = null; this.snapState = null; }
 
   // Rubber-band segment for the plan renderer (view-only; no model access needed).
   previewSegment() {

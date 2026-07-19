@@ -2,7 +2,7 @@ import { createViewer } from './viewer/viewer.js';
 import { createWalkController } from './viewer/walkCamera.js';
 import { buildScene, sceneBounds, rebuildGeometry } from './build/sceneBuilder.js';
 import { serialize, deserialize, validateProject, projectCounts } from './core/model.js';
-import { createAppState, availableTools, MODE, TOOL, VIEW, CAMERA } from './app/state.js';
+import { createAppState, availableTools, isAvailable, MODE, TOOL, VIEW, CAMERA } from './app/state.js';
 import { cutawayHiddenWalls } from './viewer/cutaway.js';
 import { formatLength, UNIT } from './core/units.js';
 import { describeSelection, buildDimensionEdit } from './app/inspector.js';
@@ -163,7 +163,25 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
     const modeButtons = [...document.querySelectorAll('#modes button')];
     const syncModeButtons = () => modeButtons.forEach((b) => b.classList.toggle('active', b.dataset.mode === app.mode));
     modeButtons.forEach((b) => b.addEventListener('click', () => {
-      app.setMode(b.dataset.mode); syncModeButtons(); renderInspector(); updateStatus();
+      app.setMode(b.dataset.mode); syncModeButtons(); renderInspector(); syncSnapPanel(); updateStatus();
+    }));
+
+    // --- Pro snapping/constraint settings (the tier-table row; hidden in Simple) ---
+    // The single UI surface for the Pro seam's drawing constraints. Simple mode keeps a
+    // fixed grid snap in the controller, so this panel is disclosed only in Pro.
+    const snapBox = $('snapping');
+    const snapInputs = [...snapBox.querySelectorAll('[data-snap]')];
+    function syncSnapPanel() {
+      snapBox.hidden = !isAvailable('snapping-constraints', app.mode);
+      for (const el of snapInputs) {
+        const key = el.dataset.snap, val = app.snap[key];
+        if (el.type === 'checkbox') el.checked = !!val; else el.value = String(val);
+      }
+    }
+    snapInputs.forEach((el) => el.addEventListener('change', () => {
+      const key = el.dataset.snap;
+      const val = el.type === 'checkbox' ? el.checked : Number(el.value);
+      app.setSnap({ [key]: val }); syncSnapPanel(); plan.draw();
     }));
 
     // --- display units toggle (m ↔ ft-in) — storage stays metric; this is display only ---
@@ -318,6 +336,7 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
     syncCameraButtons();
     syncModeButtons();
     syncUnitButtons();
+    syncSnapPanel();
     renderInspector();
     updateStatus();
     spike.built = true; spike.booted = true;
@@ -337,8 +356,10 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       // inspector / Simple-Pro seam handles (deterministic driving from the headless harness)
       __inspect: () => describeSelection(project, app.selection, { mode: app.mode, units: app.units }),
       __commitField: (key, raw) => { commitField(key, raw); return $('ins-msg') ? $('ins-msg').textContent : ''; },
-      __setMode: (m) => { app.setMode(m); syncModeButtons(); renderInspector(); updateStatus(); },
+      __setMode: (m) => { app.setMode(m); syncModeButtons(); renderInspector(); syncSnapPanel(); updateStatus(); },
       __setUnits: (u) => { app.setUnits(u); syncUnitButtons(); renderInspector(); },
+      __setSnap: (patch) => { const s = app.setSnap(patch); syncSnapPanel(); plan.draw(); return s; },
+      __snapState: () => controller.snapState,
       __select: (sel) => { app.selection = sel; plan.draw(); renderInspector(); updateStatus(); },
     });
     window.__selftest = () => { const j = serialize(project); const p = deserialize(j); return { valid: validateProject(p).ok, lossless: serialize(p) === j, counts: projectCounts(p) }; };

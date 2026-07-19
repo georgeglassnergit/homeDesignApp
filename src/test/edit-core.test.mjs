@@ -27,6 +27,8 @@ import {
 // installed, so if planView.js or tools.js imported three this file would fail to load —
 // importing them here is itself the model/view-separation guard for S2/S3.
 import { createPlanView, snap, pointToSegment, nearestVertex, nearestWallHit } from '../edit/planView.js';
+// Pro snapping/constraint math — pure, must stay three-free (importing under Node is the guard).
+import { snapPoint, snapToGrid, normalizeSnapSettings, defaultSnapSettings } from '../edit/snapping.js';
 import { ToolController } from '../edit/tools.js';
 import { sampleHome } from '../templates/sampleHome.js';
 import { blank, studio, STARTERS } from '../templates/starters.js';
@@ -474,6 +476,94 @@ eTooWide.command.do(rp);
 ok(!validateProject(rp).ok, '28v over-wide opening is caught by validateProject (UI rolls back)');
 eTooWide.command.undo(rp);
 ok(validateProject(rp).ok, '28w rolling the bad edit back restores a valid project');
+
+// ============================================================================
+// 29) Pro snapping/constraint math (edit/snapping.js) — pure, engine-independent.
+//     The tier-table row "Snapping/constraint settings — Pro". Precedence:
+//     endpoint > angle-lock (+ length grid) > free grid.
+// ============================================================================
+const dSnap = defaultSnapSettings();
+ok(dSnap.grid && dSnap.angle && dSnap.endpoint && near(dSnap.gridStep, 0.1) && dSnap.angleStep === 45,
+  '29a default settings enable all three constraints with sane steps');
+
+// normalize guards bad values back to defaults (a bad step can never corrupt the math)
+const dnorm = normalizeSnapSettings({ gridStep: -5, angleStep: 999, endpointTol: -1 });
+ok(near(dnorm.gridStep, 0.1) && dnorm.angleStep === 45 && near(dnorm.endpointTol, 0.25),
+  '29b normalizeSnapSettings clamps out-of-range steps to defaults');
+ok(normalizeSnapSettings({ grid: false }).grid === false, '29c normalize preserves an explicit disable');
+
+// free grid snap (no anchor)
+ok(near(snapToGrid({ x: 0.13, z: -0.07 }, 0.1).x, 0.1), '29d snapToGrid quantizes a free point');
+const gOnly = snapPoint({ x: 0.13, z: -0.07 }, { grid: true, gridStep: 0.1, angle: false, endpoint: false });
+ok(near(gOnly.point.x, 0.1) && near(gOnly.point.z, -0.1) && gOnly.snapped.grid && !gOnly.snapped.angle,
+  '29e grid-only snap fires grid, not angle');
+
+// angle-lock: a near-horizontal drag off the anchor locks to 0°, dropping the z drift
+const aLock = snapPoint({ x: 3.02, z: 0.14 }, { grid: false, angle: true, angleStep: 90, endpoint: false }, { anchor: { x: 0, z: 0 } });
+ok(near(aLock.point.z, 0) && near(aLock.point.x, Math.hypot(3.02, 0.14)) && aLock.snapped.angle,
+  '29f 90° angle-lock snaps a near-horizontal segment onto the axis, keeping its length');
+// 45° increment locks a ~50° direction to exactly 45° (x==z, both positive)
+const a45 = snapPoint({ x: 2, z: 2.4 }, { grid: false, angle: true, angleStep: 45, endpoint: false }, { anchor: { x: 0, z: 0 } });
+ok(near(a45.point.x, a45.point.z, 1e-6) && a45.point.x > 0, '29g 45° lock produces an exact diagonal (x==z)');
+
+// angle + grid: direction locked to axis AND length quantized to the grid step
+const aGrid = snapPoint({ x: 3.03, z: 0.12 }, { grid: true, gridStep: 0.1, angle: true, angleStep: 90, endpoint: false }, { anchor: { x: 0, z: 0 } });
+ok(near(aGrid.point.z, 0) && near(aGrid.point.x, 3.0) && aGrid.snapped.angle && aGrid.snapped.grid,
+  '29h angle+grid: axis-locked direction with length quantized to 3.00 m');
+
+// endpoint snap WINS over angle/grid — landing exactly on an existing corner
+const eSnap = snapPoint({ x: 4.06, z: 0.03 }, defaultSnapSettings(), { anchor: { x: 0, z: 0 }, vertices: [{ x: 4, z: 0 }] });
+ok(near(eSnap.point.x, 4) && near(eSnap.point.z, 0) && eSnap.snapped.endpoint && !eSnap.snapped.angle,
+  '29i endpoint snap wins: point lands exactly on the corner');
+// but only within tolerance — a far point ignores the vertex and falls through to angle/grid
+const eMiss = snapPoint({ x: 3.0, z: 0.02 }, defaultSnapSettings(), { anchor: { x: 0, z: 0 }, vertices: [{ x: 4, z: 0 }] });
+ok(!eMiss.snapped.endpoint && eMiss.snapped.angle, '29j out-of-tolerance vertex is ignored (falls through to angle-lock)');
+
+// all constraints off = identity passthrough (Pro user who wants raw points)
+const off = snapPoint({ x: 1.234, z: -5.678 }, { grid: false, angle: false, endpoint: false }, { anchor: { x: 0, z: 0 } });
+ok(near(off.point.x, 1.234) && near(off.point.z, -5.678) && !off.snapped.grid && !off.snapped.angle,
+  '29k all constraints off returns the raw point unchanged');
+
+// 30) ToolController honors the seam: Simple = fixed grid; Pro = the snap settings.
+_resetIds();
+const sProj = createProject({ name: 'Snap', levels: [createLevel({ id: 'L' })] });
+const sHist = new History(sProj, { limit: 100 });
+const sState = createAppState({ mode: MODE.PRO });
+const sPV = createPlanView({ width: 400, height: 400, pxPerMeter: 40, center: { x: 2, z: 2 } });
+const sc2 = new ToolController({ state: sState, history: sHist, project: sProj, planView: sPV, levelId: 'L', rebuild: () => {} });
+
+// Pro draw with angle-lock: a first corner at origin, then a wobbly near-horizontal second
+// click snaps to a clean axis-aligned, grid-length wall.
+sState.setSnap(defaultSnapSettings());
+sc2.setTool(TOOL.DRAW_WALL);
+sc2.pointerDown({ x: 0, z: 0 });
+sc2.pointerDown({ x: 4.03, z: 0.13 });     // wobble should vanish under 90° lock + grid
+const sw0 = sProj.levels[0].walls[0];
+ok(near(sw0.a.x, 0) && near(sw0.a.z, 0) && near(sw0.b.z, 0) && near(sw0.b.x, 4.0),
+  '30a Pro angle-lock+grid draws a clean 4.00 m axis-aligned wall from a wobbly click');
+ok(sc2.snapState && sc2.snapState.angle, '30b controller records the angle-lock that fired');
+sc2.finishChain();
+
+// endpoint snap closes onto an existing corner during a Pro draw
+sc2.setTool(TOOL.DRAW_WALL);
+sc2.pointerDown({ x: 4, z: 4 });
+sc2.pointerDown({ x: 4.05, z: 0.06 });     // near wall0's b corner (4,0) -> should land exactly on it
+const sw1 = sProj.levels[0].walls[1];
+ok(near(sw1.b.x, 4) && near(sw1.b.z, 0), '30c Pro endpoint snap closes the new wall exactly onto the shared corner');
+sc2.finishChain();
+
+// Simple mode ignores the Pro settings (angle off): a wobbly draw keeps its grid-rounded drift
+_resetIds();
+const mProj = createProject({ name: 'SimpleSnap', levels: [createLevel({ id: 'L' })] });
+const mState = createAppState({ mode: MODE.SIMPLE });
+mState.setSnap({ angle: true, angleStep: 90 });    // set Pro settings, but Simple must NOT use them
+const mc = new ToolController({ state: mState, history: new History(mProj, { limit: 100 }), project: mProj, planView: sPV, levelId: 'L', rebuild: () => {} });
+mc.setTool(TOOL.DRAW_WALL);
+mc.pointerDown({ x: 0, z: 0 });
+mc.pointerDown({ x: 4.03, z: 0.13 });      // Simple => grid-only (0.1) => keeps z ~= 0.1, no axis lock
+ok(near(mProj.levels[0].walls[0].b.z, 0.1) && mc.snapState.grid && !mc.snapState.angle,
+  '30d Simple mode uses the fixed grid snap only — Pro angle settings are not applied');
+mc.finishChain();
 
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'} — ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

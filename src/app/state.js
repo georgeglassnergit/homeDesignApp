@@ -3,6 +3,7 @@
 // tools. This is the single gate the whole UI reads from (progressive disclosure).
 
 import { UNIT } from '../core/units.js';
+import { defaultSnapSettings, normalizeSnapSettings } from '../edit/snapping.js';
 
 export const MODE = Object.freeze({ SIMPLE: 'simple', PRO: 'pro' });
 
@@ -55,10 +56,12 @@ export function createAppState(opts = {}) {
     activeTool: opts.activeTool || TOOL.SELECT,   // S1 tool state machine
     view: opts.view || VIEW.EXTERIOR,             // S5 exterior <-> cutaway (view pref)
     camera: opts.camera || CAMERA.ORBIT,          // S6 orbit <-> walk
+    snap: normalizeSnapSettings(opts.snap || defaultSnapSettings()), // Pro snapping/constraint settings
     setMode(m) { this.mode = m; },
     setUnits(u) { this.units = u; },
     setTool(t) { this.activeTool = t; },
     setView(v) { this.view = v; },
     setCamera(c) { this.camera = c; },
+    setSnap(patch) { this.snap = normalizeSnapSettings({ ...this.snap, ...patch }); return this.snap; },
   };
 }

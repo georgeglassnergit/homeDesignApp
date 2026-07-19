@@ -108,6 +108,21 @@ export function createPlanCanvas(canvas, { project, controller, planView, state,
     ctx.setLineDash([6, 5]); ctx.lineWidth = 2; ctx.strokeStyle = '#c56a2c';
     ctx.beginPath(); ctx.moveTo(a.px, a.py); ctx.lineTo(b.px, b.py); ctx.stroke();
     ctx.setLineDash([]);
+    drawSnapIndicator(b);
+  }
+
+  // Show which Pro snap fired at the live point: a ring on an endpoint (corner) snap,
+  // a small square on an angle-lock. Purely a view cue driven by controller.snapState.
+  function drawSnapIndicator(pt) {
+    const s = controller.snapState;
+    if (!s) return;
+    if (s.endpoint) {
+      ctx.strokeStyle = '#2e7d6b'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(pt.px, pt.py, 7, 0, Math.PI * 2); ctx.stroke();
+    } else if (s.angle) {
+      ctx.strokeStyle = '#c56a2c'; ctx.lineWidth = 1.5;
+      ctx.strokeRect(pt.px - 4, pt.py - 4, 8, 8);
+    }
   }
 
   // --- pointer wiring: DOM event -> world coords -> controller ---
