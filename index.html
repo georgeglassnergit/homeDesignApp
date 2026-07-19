@@ -100,6 +100,35 @@
       }
       #picker-close:hover { background: #fbf7f0; }
       #picker-note { color: #7a6c5d; font-size: 12px; }
+
+      /* Pro-seam snapping / constraint settings — a popover under the "Snap…" toolbar
+         button. Hidden entirely in Simple mode (the seam); revealed in Pro so a precision
+         user controls grid / vertex / angle constraints. Storage-free view pref. */
+      #snap-group { display: none; }            /* shown only in Pro (isAvailable gate) */
+      #snap-group.on { display: flex; }
+      #snap-btn.armed { background: #6b5b4b; color: #fff; border-color: #6b5b4b; }
+      #snap-panel {
+        position: fixed; z-index: 45; display: none;
+        background: #f4efe7; border: 1px solid #cbb2a0; border-radius: 11px;
+        box-shadow: 0 12px 34px rgba(43,38,34,.28); padding: 12px 14px; width: 232px;
+        font-size: 12.5px;
+      }
+      #snap-panel.open { display: block; }
+      #snap-panel .sp-title { font-family: Georgia, serif; font-weight: 700; font-size: 13.5px; margin-bottom: 8px; }
+      #snap-panel .sp-row { display: flex; align-items: center; gap: 8px; margin: 7px 0; }
+      #snap-panel .sp-row label.chk { display: flex; align-items: center; gap: 7px; cursor: pointer; flex: 1; }
+      #snap-panel input[type=checkbox] { width: 15px; height: 15px; accent-color: #6b5b4b; cursor: pointer; }
+      #snap-panel .sp-num {
+        font: inherit; width: 58px; padding: 3px 6px; text-align: right;
+        border: 1px solid #c3ab97; border-radius: 6px; background: #fff; color: #2b2622;
+        font-variant-numeric: tabular-nums;
+      }
+      #snap-panel select.sp-sel {
+        font: inherit; padding: 3px 6px; border: 1px solid #c3ab97; border-radius: 6px; background: #fff; cursor: pointer;
+      }
+      #snap-panel input:disabled, #snap-panel select:disabled { opacity: .4; cursor: default; }
+      #snap-panel .sp-unit { color: #8a7c6c; }
+      #snap-panel .sp-hint { color: #8a7c6c; font-size: 10.5px; margin-top: 9px; line-height: 1.4; }
     </style>
   </head>
   <body>
@@ -133,13 +162,16 @@
           <button id="redo" title="Redo (Ctrl+Y)">Redo</button>
         </div>
         <div class="sep"></div>
-        <div class="group" id="modes" title="Simple keeps it novice-friendly; Pro reveals exact-dimension entry">
+        <div class="group" id="modes" title="Simple keeps it novice-friendly; Pro reveals exact-dimension entry + snapping controls">
           <button data-mode="simple" class="active" title="Novice-friendly toolset">Simple</button>
-          <button data-mode="pro" title="Reveal exact-dimension entry">Pro</button>
+          <button data-mode="pro" title="Reveal exact-dimension entry + snapping/constraint settings">Pro</button>
         </div>
         <div class="group" id="units" title="Display units (storage stays metric)">
           <button data-units="metric" class="active" title="Metres / centimetres">m</button>
           <button data-units="imperial" title="Feet &amp; inches">ft</button>
+        </div>
+        <div class="group" id="snap-group" title="Snapping &amp; constraints (Pro)">
+          <button id="snap-btn" title="Grid / vertex / angle snapping settings">Snap…</button>
         </div>
         <span class="hint" id="toolhint">Select a starter or draw a room</span>
       </div>
@@ -153,6 +185,27 @@
           <div id="hud"><b>Phase 2</b><div id="status">booting…</div></div>
         </div>
       </div>
+    </div>
+    <div id="snap-panel" role="dialog" aria-label="Snapping settings">
+      <div class="sp-title">Snapping &amp; constraints</div>
+      <div class="sp-row">
+        <label class="chk"><input type="checkbox" id="snap-grid"> Grid</label>
+        <input class="sp-num" id="snap-grid-step" type="number" min="0.01" step="0.01" value="0.1">
+        <span class="sp-unit">m</span>
+      </div>
+      <div class="sp-row">
+        <label class="chk"><input type="checkbox" id="snap-vertex"> Snap to corners</label>
+      </div>
+      <div class="sp-row">
+        <label class="chk"><input type="checkbox" id="snap-angle"> Angle lock</label>
+        <select class="sp-sel" id="snap-angle-step">
+          <option value="15">15°</option>
+          <option value="30">30°</option>
+          <option value="45" selected>45°</option>
+          <option value="90">90°</option>
+        </select>
+      </div>
+      <div class="sp-hint">Corner snap keeps rooms watertight. Angle lock constrains a drawn wall to the chosen increment.</div>
     </div>
     <div id="picker" aria-modal="true" role="dialog" aria-label="Choose a template">
       <div id="picker-card">

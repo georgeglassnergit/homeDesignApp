@@ -27,6 +27,10 @@ import {
 // installed, so if planView.js or tools.js imported three this file would fail to load —
 // importing them here is itself the model/view-separation guard for S2/S3.
 import { createPlanView, snap, pointToSegment, nearestVertex, nearestWallHit } from '../edit/planView.js';
+// Pro-seam snapping/constraint math — pure, must stay three-free (importing under Node is the guard).
+import {
+  defaultSnapSettings, normalizeSnapSettings, nearestSnapVertex, constrainAngle, snapPoint,
+} from '../edit/snapping.js';
 import { ToolController } from '../edit/tools.js';
 import { sampleHome } from '../templates/sampleHome.js';
 import { blank, studio, STARTERS } from '../templates/starters.js';
@@ -474,6 +478,64 @@ eTooWide.command.do(rp);
 ok(!validateProject(rp).ok, '28v over-wide opening is caught by validateProject (UI rolls back)');
 eTooWide.command.undo(rp);
 ok(validateProject(rp).ok, '28w rolling the bad edit back restores a valid project');
+
+// 29) Pro-seam snapping/constraint math (snapping.js) — pure grid/vertex/angle composition.
+// ---- defaults + normalization ----
+const sd = defaultSnapSettings();
+ok(sd.grid.on && near(sd.grid.step, 0.1) && sd.vertex.on && !sd.angle.on, '29a defaults: grid+vertex on, angle off');
+ok(defaultSnapSettings() !== sd && defaultSnapSettings().grid !== sd.grid, '29b defaults return a fresh object (no shared mutable state)');
+const norm = normalizeSnapSettings({ grid: { on: true, step: -5 }, vertex: { on: true, tol: 0 }, angle: { on: true, stepDeg: 999 } });
+ok(near(norm.grid.step, 0.1) && near(norm.vertex.tol, 0.2) && near(norm.angle.stepDeg, 45), '29c bad (non-positive / out-of-range) steps fall back to safe defaults');
+ok(normalizeSnapSettings(null).grid.on === true, '29d null settings normalize to defaults');
+ok(normalizeSnapSettings({ grid: { on: false }, vertex: { on: false }, angle: { on: false } }).grid.on === false, '29e explicit off is preserved');
+
+// ---- nearestSnapVertex ----
+const snWalls = [
+  createWall({ x: 0, z: 0 }, { x: 4, z: 0 }, { id: 'w1' }),
+  createWall({ x: 4, z: 0 }, { x: 4, z: 3 }, { id: 'w2' }),
+];
+const snNV = nearestSnapVertex({ x: 4.05, z: 0.05 }, snWalls, 0.2);
+ok(snNV && near(snNV.x, 4) && near(snNV.z, 0), '29f nearestSnapVertex snaps onto the closest existing corner');
+ok(nearestSnapVertex({ x: 2, z: 2 }, snWalls, 0.2) === null, '29g no corner within tolerance returns null');
+const snNVKey = nearestSnapVertex({ x: 4.05, z: 0.05 }, snWalls, 0.2, new Set(['w1:b', 'w2:a']));
+ok(snNVKey === null, '29h excluded endpoints are skipped (a dragged corner never snaps to itself)');
+
+// ---- constrainAngle ----
+const ca = constrainAngle({ x: 0, z: 0 }, { x: 3, z: 0.4 }, 45);   // ~7.6° -> snaps to 0°
+ok(near(ca.z, 0) && near(ca.x, Math.hypot(3, 0.4)), '29i angle snap constrains a near-horizontal drag to 0° (ortho), preserving length');
+const ca90 = constrainAngle({ x: 0, z: 0 }, { x: 0.3, z: 5 }, 90);  // -> 90° (straight +z)
+ok(near(ca90.x, 0) && near(ca90.z, Math.hypot(0.3, 5)), '29j 90° step constrains a near-vertical drag to the +z axis');
+const caLen = constrainAngle({ x: 0, z: 0 }, { x: 3.17, z: 0.02 }, 45, 0.1); // length quantized to 0.1
+ok(near(caLen.z, 0) && near(caLen.x, 3.2), '29k length is quantized to the grid step when provided');
+ok(constrainAngle({ x: 1, z: 1 }, { x: 1, z: 1 }, 45).x === 1, '29l zero-length input returns the anchor unchanged');
+
+// ---- snapPoint composition + priority ----
+const gridOnly = snapPoint({ x: 0.13, z: -0.07 }, { settings: { grid: { on: true, step: 0.1 }, vertex: { on: false }, angle: { on: false } } });
+ok(near(gridOnly.x, 0.1) && near(gridOnly.z, -0.1) && gridOnly.snapped === 'grid', '29m grid-only snap rounds to the grid');
+const vtxWins = snapPoint({ x: 4.06, z: 0.04 }, { settings: { grid: { on: true, step: 0.5 }, vertex: { on: true, tol: 0.2 }, angle: { on: false } }, walls: snWalls });
+ok(near(vtxWins.x, 4) && near(vtxWins.z, 0) && vtxWins.snapped === 'vertex', '29n vertex snap wins over grid when a corner is in reach');
+const angleWins = snapPoint({ x: 3, z: 0.3 }, { settings: { grid: { on: false }, vertex: { on: false }, angle: { on: true, stepDeg: 90 } }, anchor: { x: 0, z: 0 } });
+ok(near(angleWins.z, 0) && angleWins.snapped === 'angle', '29o angle snap fires (with an anchor) when vertex misses');
+const angleNoAnchor = snapPoint({ x: 3, z: 0.3 }, { settings: { grid: { on: true, step: 0.1 }, vertex: { on: false }, angle: { on: true, stepDeg: 90 } } });
+ok(angleNoAnchor.snapped === 'grid', '29p angle snap needs an anchor; without one it falls through to grid');
+const noSnap = snapPoint({ x: 3.14159, z: 2.71828 }, { settings: { grid: { on: false }, vertex: { on: false }, angle: { on: false } } });
+ok(near(noSnap.x, 3.14159) && noSnap.snapped === null, '29q all constraints off returns the raw point (Pro freeform)');
+
+// ---- integration: the controller honors Pro snapping settings (angle-locked wall draw) ----
+_resetIds();
+const spProj = createProject({ name: 'Snap', levels: [createLevel({ id: 'L' })] });
+const spState = createAppState({ mode: MODE.PRO });
+spState.setSnap({ grid: { on: false }, vertex: { on: false }, angle: { on: true, stepDeg: 90 } });
+const spTC = new ToolController({ state: spState, history: new History(spProj), project: spProj, planView: createPlanView({ width: 400, height: 400 }), levelId: 'L', rebuild: () => {} });
+spTC.setTool(TOOL.DRAW_WALL);
+spTC.pointerDown({ x: 0, z: 0 });                 // anchor
+spTC.pointerDown({ x: 4, z: 0.35 });              // ~5° off horizontal -> angle-locked to z=0
+const spWall = spProj.levels[0].walls[0];
+ok(spProj.levels[0].walls.length === 1 && near(spWall.b.z, 0), '29r Pro angle-lock: an off-axis draw click snaps the wall to ortho');
+ok(validateProject(spProj).ok, '29s the angle-locked wall validates');
+// setSnap deep-merge leaves untouched groups intact
+spState.setSnap({ vertex: { on: true } });
+ok(spState.snap.angle.on === true && spState.snap.vertex.on === true, '29t setSnap deep-merges without clobbering other groups');
 
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'} — ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
