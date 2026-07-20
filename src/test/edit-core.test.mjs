@@ -37,6 +37,12 @@ import { blank, studio, STARTERS } from '../templates/starters.js';
 // S4 picker helpers — pure, must stay three-free/DOM-free (importing under Node is the guard).
 import { createDirtyTracker } from '../app/dirty.js';
 import { planThumbnailSVG, wallsBounds } from '../app/thumbnail.js';
+// Node fs/path — used only by the static model/view-separation guard at the bottom of
+// this file. (The imports above already prove each pure module *loads* without three;
+// the guard below proves no pure module *imports* three even along an untaken branch.)
+import { readdirSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join, relative, sep } from 'node:path';
 
 let pass = 0, fail = 0; const fails = [];
 function ok(cond, msg) { if (cond) { pass++; } else { fail++; fails.push(msg); console.log('  FAIL: ' + msg); } }
@@ -536,6 +542,59 @@ ok(validateProject(spProj).ok, '29s the angle-locked wall validates');
 // setSnap deep-merge leaves untouched groups intact
 spState.setSnap({ vertex: { on: true } });
 ok(spState.snap.angle.on === true && spState.snap.vertex.on === true, '29t setSnap deep-merges without clobbering other groups');
+
+// ---- 30) model/view-separation guard (static tree scan) -------------------------------
+// The Phase 0/1 architecture and the Phase 2 plan make model/view separation *sacred*:
+// core/ (data + rules), templates/ (pure starters), app/ (state, no render), and the
+// interaction logic in edit/ + the pure viewer math must never import the Three.js engine.
+// Every prior run asserted this by *loading* those modules under Node (they'd throw if they
+// imported the absent `three`). That misses a leak hidden behind an untaken branch or a
+// lazily-evaluated path. This guard scans the source text of the whole tree instead, so a
+// stray `import ... from 'three'` in a module that's meant to be pure fails the suite even
+// if that line never executes — the invariant the DEV-LOG hand-checked every run, automated.
+const SRC = dirname(dirname(fileURLToPath(import.meta.url))); // .../src
+// The ONLY modules permitted to depend on the Three.js engine (the render/build/pick layer).
+const THREE_ALLOWED = new Set([
+  'build/furniture.js', 'build/geometry.js', 'build/materials.js', 'build/sceneBuilder.js',
+  'viewer/viewer.js', 'viewer/walkCamera.js', 'edit/picking.js',
+]);
+// A three-ecosystem import: `three`, `three/...`, `three-bvh-csg`, or `three-mesh-bvh`,
+// whether static (`from 'three'`) or dynamic (`import('three')`).
+const importsThree = (text) =>
+  /\b(?:from|import)\s*\(?\s*['"](?:three(?:\/[^'"]*)?|three-bvh-csg|three-mesh-bvh)['"]/.test(text);
+function collectJs(dir, acc = []) {
+  for (const ent of readdirSync(dir, { withFileTypes: true })) {
+    if (ent.name === 'test' || ent.name === 'node_modules') continue; // skip this harness + deps
+    const full = join(dir, ent.name);
+    if (ent.isDirectory()) collectJs(full, acc);
+    else if (ent.name.endsWith('.js') || ent.name.endsWith('.mjs')) acc.push(full);
+  }
+  return acc;
+}
+const jsFiles = collectJs(SRC);
+ok(jsFiles.length >= 20, `30a source scan found the tree (${jsFiles.length} js files under src/)`);
+const threeImporters = new Set();
+for (const file of jsFiles) {
+  const rel = relative(SRC, file).split(sep).join('/');
+  if (importsThree(readFileSync(file, 'utf8'))) threeImporters.add(rel);
+}
+// Every module that touches three must be on the allowlist — no engine leak into pure code.
+const leaks = [...threeImporters].filter((f) => !THREE_ALLOWED.has(f)).sort();
+ok(leaks.length === 0, `30b no Three.js import leaks into pure model/view code (offenders: ${leaks.join(', ') || 'none'})`);
+// The allowlist must not rot: every file we *permit* to import three must actually still
+// do so (a renamed/retired view file should be removed from the list, not left dangling).
+const staleAllow = [...THREE_ALLOWED].filter((f) => !threeImporters.has(f)).sort();
+ok(staleAllow.length === 0, `30c the three-allowlist has no stale entries (dangling: ${staleAllow.join(', ') || 'none'})`);
+// Spot-check the invariant's teeth from both sides.
+ok(importsThree("import * as THREE from 'three';"), '30d guard detects a bare three import');
+ok(importsThree("import { Brush } from 'three-bvh-csg';"), '30e guard detects a three-bvh-csg import');
+ok(importsThree("const T = await import('three');"), '30f guard detects a dynamic three import');
+ok(!importsThree("import { addWall } from '../edit/commands.js';"), '30g guard ignores non-three imports');
+ok(!importsThree("// three is great but this is a comment, not an import"), '30h guard ignores the word three in prose');
+// The four load-bearing pure directories must be entirely three-free.
+for (const pureFile of ['core/model.js', 'core/units.js', 'app/state.js', 'templates/starters.js', 'edit/tools.js', 'edit/snapping.js', 'viewer/cutaway.js', 'viewer/walk.js']) {
+  ok(!threeImporters.has(pureFile), `30i pure module stays engine-free: ${pureFile}`);
+}
 
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'} — ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
