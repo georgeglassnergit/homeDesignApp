@@ -3,7 +3,7 @@
 // Scene rebuild is a pure function of the model after each command (done by the view layer).
 // Model/view separation: ZERO Three.js in here — commands only touch the plain Project.
 
-import { findLevel, findWall, findOpening } from '../core/model.js';
+import { findLevel, findWall, findOpening, stackElevations } from '../core/model.js';
 
 const clone = (v) => JSON.parse(JSON.stringify(v));
 
@@ -151,6 +151,113 @@ export function resizeOpening(levelId, openingId, changes = {}) {
     undo(project) {
       const o = findOpening(findLevel(project, levelId), openingId);
       if (o && prev) Object.assign(o, prev);
+    },
+  };
+}
+
+// ---- multi-level (storey) edits — the Pro-seam "multi-level" feature -------------
+// The model has always carried Levels[] (S1); the scene builder already stacks every
+// level by its elevation. These commands let a Pro user add / remove / rename storeys
+// and set storey heights, keeping the stack contiguous (each floor sits on the one
+// below via stackElevations). All are lossless: they capture the prior elevations of
+// every level and restore them on undo, so an edit→undo round-trip is byte-identical.
+
+// Add a storey on top of the stack. `level` must already be a model level (from
+// createLevel, with id). Appending at the top leaves every existing level's elevation
+// unchanged; stackElevations only sets the new top level's floor onto the one beneath.
+export function addLevel(level) {
+  return {
+    name: 'Add level',
+    do(project) {
+      project.levels.push(level);
+      stackElevations(project.levels);
+    },
+    undo(project) {
+      project.levels = project.levels.filter(l => l.id !== level.id);
+    },
+  };
+}
+
+// Remove a storey. Refuses to remove the last remaining level (a home needs a floor).
+// Removing a lower storey shifts everything above it down; undo restores the removed
+// level at its original index AND every level's captured elevation, so it's lossless.
+export function removeLevel(levelId) {
+  let removed = null, idx = -1, prevElev = null;
+  return {
+    name: 'Remove level',
+    do(project) {
+      if (project.levels.length <= 1) throw new Error('removeLevel: cannot remove the last level');
+      idx = project.levels.findIndex(l => l.id === levelId);
+      if (idx < 0) throw new Error(`removeLevel: missing level ${levelId}`);
+      prevElev = project.levels.map(l => ({ id: l.id, elevation: l.elevation }));
+      removed = project.levels[idx];
+      project.levels.splice(idx, 1);
+      stackElevations(project.levels);
+    },
+    undo(project) {
+      project.levels.splice(idx, 0, removed);
+      for (const { id, elevation } of prevElev) { const l = project.levels.find(x => x.id === id); if (l) l.elevation = elevation; }
+    },
+  };
+}
+
+// Set (or clear) a storey's roof. Used when stacking/unstacking storeys so the roof always
+// caps the TOP level: adding a storey moves the roof up, removing the top moves it back down.
+// `roof` may be a roof object (from createRoof) or null. Prior roof captured for lossless undo.
+export function setLevelRoof(levelId, roof) {
+  let prev;
+  return {
+    name: roof ? 'Add roof' : 'Remove roof',
+    do(project) {
+      const l = findLevel(project, levelId);
+      if (!l) throw new Error(`setLevelRoof: missing level ${levelId}`);
+      prev = l.roof;
+      l.roof = roof;
+    },
+    undo(project) {
+      const l = findLevel(project, levelId);
+      if (l) l.roof = prev;
+    },
+  };
+}
+
+// Rename a storey (a label only — no geometry, trivially lossless).
+export function renameLevel(levelId, name) {
+  let prev;
+  return {
+    name: 'Rename level',
+    do(project) {
+      const l = findLevel(project, levelId);
+      if (!l) throw new Error(`renameLevel: missing level ${levelId}`);
+      prev = l.name;
+      l.name = name;
+    },
+    undo(project) {
+      const l = findLevel(project, levelId);
+      if (l) l.name = prev;
+    },
+  };
+}
+
+// Set a storey's floor-to-floor height. Raising a lower storey pushes every storey above
+// it up (via stackElevations); the prior height and all elevations are captured for a
+// byte-lossless undo. The caller re-validates (height must be > 0) and rolls back on fail.
+export function setLevelHeight(levelId, height) {
+  let prevH, prevElev;
+  return {
+    name: 'Set level height',
+    do(project) {
+      const l = findLevel(project, levelId);
+      if (!l) throw new Error(`setLevelHeight: missing level ${levelId}`);
+      prevH = l.height;
+      prevElev = project.levels.map(x => ({ id: x.id, elevation: x.elevation }));
+      l.height = height;
+      stackElevations(project.levels);
+    },
+    undo(project) {
+      const l = findLevel(project, levelId);
+      if (l) l.height = prevH;
+      for (const { id, elevation } of prevElev) { const x = project.levels.find(y => y.id === id); if (x) x.elevation = elevation; }
     },
   };
 }

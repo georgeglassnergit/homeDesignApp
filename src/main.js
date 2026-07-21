@@ -1,7 +1,7 @@
 import { createViewer } from './viewer/viewer.js';
 import { createWalkController } from './viewer/walkCamera.js';
 import { buildScene, sceneBounds, rebuildGeometry } from './build/sceneBuilder.js';
-import { serialize, deserialize, validateProject, projectCounts } from './core/model.js';
+import { serialize, deserialize, validateProject, projectCounts, createLevel, createRoof } from './core/model.js';
 import { createAppState, availableTools, isAvailable, MODE, TOOL, VIEW, CAMERA } from './app/state.js';
 import { cutawayHiddenWalls } from './viewer/cutaway.js';
 import { formatLength, UNIT } from './core/units.js';
@@ -12,7 +12,7 @@ import { createPlanView } from './edit/planView.js';
 import { raycast, eventToNDC } from './edit/picking.js';
 import { createPlanCanvas } from './app/planCanvas.js';
 import { STARTERS } from './templates/starters.js';
-import { loadTemplate, setView } from './edit/commands.js';
+import { loadTemplate, setView, addLevel, removeLevel, renameLevel, setLevelHeight, setLevelRoof, composite } from './edit/commands.js';
 import { createDirtyTracker } from './app/dirty.js';
 import { planThumbnailSVG } from './app/thumbnail.js';
 
@@ -29,6 +29,7 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
     // Start from the two-room sample home so the app opens on something to edit
     // (matches the Phase 1 verification scene). A starter dropdown swaps it live.
     let project = STARTERS.find((s) => s.id === 'two').build();
+    app.setActiveLevel(project.levels[0].id);   // storey being edited (multi-level, Pro seam)
 
     // --- validate + lossless save/load round-trip self-test (proves the save format) ---
     const runRoundTrip = () => {
@@ -56,15 +57,26 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
 
     const controller = new ToolController({
       state: app, history, project, planView,
-      levelId: project.levels[0].id,
+      levelId: app.activeLevelId,
       rebuild: () => refresh(),        // set below (function hoisted)
     });
 
-    const plan = createPlanCanvas(planCanvasEl, { project, controller, planView, state: app, levelId: project.levels[0].id, onSelect: () => renderInspector() });
+    const plan = createPlanCanvas(planCanvasEl, { project, controller, planView, state: app, levelId: app.activeLevelId, onSelect: () => renderInspector() });
 
     // A model edit re-derives the 3D geometry and redraws the plan + status. The model
     // is the single source of truth; both views are pure functions of it.
+    // Keep the active storey valid after any model change (undo/redo may remove the level
+    // being edited). Falls back to the ground floor and re-points the controller + plan.
+    function reconcileActiveLevel() {
+      if (!project.levels.some((l) => l.id === app.activeLevelId)) {
+        app.setActiveLevel(project.levels[0] ? project.levels[0].id : null);
+      }
+      controller.levelId = app.activeLevelId;
+      plan.setLevel(app.activeLevelId);
+    }
+
     function refresh() {
+      reconcileActiveLevel();
       rebuildGeometry(home, project);
       plan.draw();
       runRoundTrip();
@@ -72,6 +84,7 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       app.view = (project.meta && project.meta.view) || VIEW.EXTERIOR;
       syncViewButtons();
       renderInspector();   // selection may have changed (undo/redo/delete/template swap)
+      renderLevels();      // storeys may have changed (add/remove/rename/height, or undo/redo)
       updateStatus();
     }
 
@@ -211,11 +224,139 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       if (!on) toggleSnapPanel(false);
     }
 
+    // --- Pro-seam multi-level (storey) editing (the "multi-level" feature) ---------------
+    // The model has always carried Levels[] and the scene builder already stacks every level
+    // by elevation; before this, the app hard-pinned levels[0]. Now a Pro user picks which
+    // storey the plan edits, and can add / remove / rename storeys and set floor-to-floor
+    // heights — each an undoable model command. The panel is the single Simple/Pro gate:
+    // hidden in Simple, revealed in Pro. Adding a storey moves the roof to the new top so the
+    // stack always caps cleanly. Storeys are pure model data — no new save fields.
+    const levelGroup = $('level-group'), levelBtn = $('level-btn'), levelPanel = $('level-panel'), levelListEl = $('level-list');
+
+    // Switch which storey the plan surface + draw tools target (no model change).
+    function switchLevel(id) {
+      if (id === app.activeLevelId) { toggleLevelPanel(false); return; }
+      if (app.camera === CAMERA.WALK) setCamera(CAMERA.ORBIT);   // eye-height context changes
+      app.setActiveLevel(id);
+      controller.levelId = id;
+      plan.setLevel(id);
+      app.selection = null;
+      plan.frameModel();
+      plan.draw();
+      renderInspector();
+      renderLevels();
+      updateStatus();
+    }
+
+    function addStorey() {
+      const top = project.levels[project.levels.length - 1];
+      const lvl = createLevel({ name: `Level ${project.levels.length + 1}`, height: top.height,
+        roof: createRoof(top.roof || { type: 'flat' }) });   // new top gets the roof
+      const cmds = [addLevel(lvl)];
+      if (top.roof) cmds.push(setLevelRoof(top.id, null));    // old top no longer the cap
+      history.execute(composite('Add storey', cmds));
+      app.setActiveLevel(lvl.id);                             // jump to the storey you just made
+      controller.levelId = lvl.id; plan.setLevel(lvl.id); app.selection = null;
+      refresh();
+      plan.frameModel();
+    }
+
+    function removeStorey(id) {
+      if (project.levels.length <= 1) return;                 // a home needs a floor
+      const idx = project.levels.findIndex((l) => l.id === id);
+      if (idx < 0) return;
+      const lvl = project.levels[idx];
+      const isTop = idx === project.levels.length - 1;
+      const cmds = [];
+      if (isTop && lvl.roof) cmds.push(setLevelRoof(project.levels[idx - 1].id, createRoof(lvl.roof))); // roof drops down
+      cmds.push(removeLevel(id));
+      history.execute(composite('Remove storey', cmds));
+      app.selection = null;
+      refresh();                                              // reconcileActiveLevel re-points if we removed the active storey
+      plan.frameModel();
+    }
+
+    function commitLevelName(id, raw) {
+      const lvl = project.levels.find((l) => l.id === id);
+      if (!lvl) return;
+      const name = (raw || '').trim() || 'Level';
+      if (name === lvl.name) return;
+      history.execute(renameLevel(id, name));
+      refresh();
+    }
+
+    function commitLevelHeight(id, raw) {
+      const lvl = project.levels.find((l) => l.id === id);
+      if (!lvl) return;
+      const h = parseFloat(raw);
+      if (!(h > 0)) { renderLevels(); return; }               // ignore invalid; restore shown value
+      if (Math.abs(h - lvl.height) < 1e-9) return;
+      const cmd = history.execute(setLevelHeight(id, h));
+      if (!validateProject(project).ok) { cmd.undo(project); history.undoStack.pop(); }  // never leave the model invalid; drop it entirely
+      refresh();
+    }
+
+    // Render the storey list top-to-bottom (upper floors first, as they stack in space).
+    function renderLevels() {
+      if (!levelListEl) return;
+      const only = project.levels.length <= 1;
+      levelListEl.innerHTML = '';
+      for (let i = project.levels.length - 1; i >= 0; i--) {
+        const lvl = project.levels[i];
+        const row = document.createElement('div');
+        row.className = 'lv-row' + (lvl.id === app.activeLevelId ? ' active' : '');
+        const pick = document.createElement('button');
+        pick.className = 'lv-pick'; pick.title = 'Edit this storey in the plan';
+        const nameInp = document.createElement('input');
+        nameInp.className = 'lv-name'; nameInp.value = lvl.name; nameInp.spellcheck = false; nameInp.autocomplete = 'off';
+        const elev = document.createElement('div');
+        elev.className = 'lv-elev'; elev.textContent = `floor ${lvl.elevation.toFixed(2)} m`;
+        pick.append(nameInp, elev);
+        const hInp = document.createElement('input');
+        hInp.className = 'lv-h'; hInp.type = 'number'; hInp.min = '0.1'; hInp.step = '0.1'; hInp.value = lvl.height; hInp.title = 'Floor-to-floor height (m)';
+        const del = document.createElement('button');
+        del.className = 'lv-del'; del.textContent = '✕'; del.title = only ? 'A home needs at least one storey' : 'Remove this storey'; del.disabled = only;
+        row.append(pick, hInp, del);
+        levelListEl.appendChild(row);
+        // wiring — clicking the pick area (not the name field being edited) switches storey
+        pick.addEventListener('click', (e) => { if (e.target !== nameInp) switchLevel(lvl.id); });
+        nameInp.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); nameInp.blur(); } });
+        nameInp.addEventListener('blur', () => commitLevelName(lvl.id, nameInp.value));
+        hInp.addEventListener('keydown', (e) => e.stopPropagation());
+        hInp.addEventListener('change', () => commitLevelHeight(lvl.id, hInp.value));
+        del.addEventListener('click', (e) => { e.stopPropagation(); removeStorey(lvl.id); });
+      }
+      levelBtn.classList.toggle('armed', project.levels.length > 1);   // multi-storey reads at a glance
+    }
+
+    $('level-add').addEventListener('click', (e) => { e.stopPropagation(); addStorey(); });
+    function positionLevelPanel() {
+      const r = levelBtn.getBoundingClientRect();
+      levelPanel.style.left = Math.max(8, Math.min(r.left, innerWidth - 284)) + 'px';
+      levelPanel.style.top = (r.bottom + 6) + 'px';
+    }
+    function toggleLevelPanel(force) {
+      const open = force === undefined ? !levelPanel.classList.contains('open') : force;
+      if (open) { renderLevels(); positionLevelPanel(); }
+      levelPanel.classList.toggle('open', open);
+    }
+    levelBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleLevelPanel(); });
+    levelPanel.addEventListener('click', (e) => e.stopPropagation());
+    addEventListener('click', () => toggleLevelPanel(false));   // click-away closes
+    // The seam: the storey controls appear only when multi-level is available (Pro). The
+    // toolbar button also reflects a stacked home (armed) so a multi-storey project reads at a glance.
+    function syncLevelSeam() {
+      const on = isAvailable('multi-level', app.mode);
+      levelGroup.classList.toggle('on', on);
+      levelBtn.classList.toggle('armed', project.levels.length > 1);
+      if (!on) toggleLevelPanel(false);
+    }
+
     // --- Simple / Pro mode toggle (the single gate the whole UI reads from) ---
     const modeButtons = [...document.querySelectorAll('#modes button')];
     const syncModeButtons = () => modeButtons.forEach((b) => b.classList.toggle('active', b.dataset.mode === app.mode));
     modeButtons.forEach((b) => b.addEventListener('click', () => {
-      app.setMode(b.dataset.mode); syncModeButtons(); syncSnapSeam(); renderInspector(); updateStatus();
+      app.setMode(b.dataset.mode); syncModeButtons(); syncSnapSeam(); syncLevelSeam(); renderInspector(); updateStatus();
     }));
 
     // --- display units toggle (m ↔ ft-in) — storage stays metric; this is display only ---
@@ -261,7 +402,8 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
     function setCamera(mode) {
       if (mode === app.camera) return;
       if (mode === CAMERA.WALK) {
-        walk.enable(project.levels.flatMap((l) => l.walls), project.levels[0]);
+        const activeLevel = project.levels.find((l) => l.id === app.activeLevelId) || project.levels[0];
+        walk.enable(project.levels.flatMap((l) => l.walls), activeLevel);
         app.camera = CAMERA.WALK;
         hint('Walk: WASD / arrows to move · drag to look · Esc to exit');
       } else {
@@ -285,9 +427,12 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
     function loadStarter(s) {
       if (app.camera === CAMERA.WALK) setCamera(CAMERA.ORBIT);   // walls change → leave walk cleanly
       history.execute(loadTemplate(s.build()));
-      controller.levelId = project.levels[0].id;
+      app.setActiveLevel(project.levels[0].id);
+      controller.levelId = app.activeLevelId;
+      plan.setLevel(app.activeLevelId);
       app.selection = null;
       refresh();
+      renderLevels();
       dirty.markClean(serialize(project));   // a freshly loaded template is the new clean baseline
       plan.frameModel();
       viewer.frame(sceneBounds(home), 1.4);
@@ -371,6 +516,8 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
     syncModeButtons();
     syncUnitButtons();
     syncSnapSeam();
+    syncLevelSeam();
+    renderLevels();
     renderInspector();
     updateStatus();
     spike.built = true; spike.booted = true;
@@ -390,12 +537,21 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       // inspector / Simple-Pro seam handles (deterministic driving from the headless harness)
       __inspect: () => describeSelection(project, app.selection, { mode: app.mode, units: app.units }),
       __commitField: (key, raw) => { commitField(key, raw); return $('ins-msg') ? $('ins-msg').textContent : ''; },
-      __setMode: (m) => { app.setMode(m); syncModeButtons(); syncSnapSeam(); renderInspector(); updateStatus(); },
+      __setMode: (m) => { app.setMode(m); syncModeButtons(); syncSnapSeam(); syncLevelSeam(); renderInspector(); updateStatus(); },
       __setUnits: (u) => { app.setUnits(u); syncUnitButtons(); renderInspector(); },
       // snapping/constraint seam handles (deterministic driving from the headless harness)
       __snap: () => app.snap, __setSnap: (partial) => { app.setSnap(partial); syncSnapControls(); plan.draw(); return app.snap; },
       __snapSeamVisible: () => snapGroup.classList.contains('on'),
       __select: (sel) => { app.selection = sel; plan.draw(); renderInspector(); updateStatus(); },
+      // multi-level (storey) seam handles — deterministic driving from the headless harness
+      __levels: () => project.levels.map((l) => ({ id: l.id, name: l.name, elevation: l.elevation, height: l.height, walls: l.walls.length, hasRoof: !!l.roof })),
+      __activeLevel: () => app.activeLevelId,
+      __levelSeamVisible: () => levelGroup.classList.contains('on'),
+      __addStorey: () => { addStorey(); return app.activeLevelId; },
+      __removeStorey: (id) => { removeStorey(id); return app.activeLevelId; },
+      __switchLevel: (id) => { switchLevel(id); return app.activeLevelId; },
+      __setLevelHeight: (id, h) => { commitLevelHeight(id, String(h)); return project.levels.find((l) => l.id === id)?.height; },
+      __renameLevel: (id, name) => { commitLevelName(id, name); return project.levels.find((l) => l.id === id)?.name; },
     });
     window.__selftest = () => { const j = serialize(project); const p = deserialize(j); return { valid: validateProject(p).ok, lossless: serialize(p) === j, counts: projectCounts(p) }; };
   } catch (e) {
