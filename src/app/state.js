@@ -53,6 +53,7 @@ export function createAppState(opts = {}) {
     mode: opts.mode || MODE.SIMPLE,
     units: opts.units || UNIT.METRIC,
     selection: null,
+    activeLevelId: opts.activeLevelId || null,    // storey being edited (multi-level, Pro seam)
     activeTool: opts.activeTool || TOOL.SELECT,   // S1 tool state machine
     view: opts.view || VIEW.EXTERIOR,             // S5 exterior <-> cutaway (view pref)
     camera: opts.camera || CAMERA.ORBIT,          // S6 orbit <-> walk
@@ -62,6 +63,7 @@ export function createAppState(opts = {}) {
     setTool(t) { this.activeTool = t; },
     setView(v) { this.view = v; },
     setCamera(c) { this.camera = c; },
+    setActiveLevel(id) { this.activeLevelId = id; },
     // Deep-merge a partial snap update (e.g. { grid: { on: false } }) so the UI can flip a
     // single field without restating the whole tree. View-only pref — never serialized.
     setSnap(partial) {

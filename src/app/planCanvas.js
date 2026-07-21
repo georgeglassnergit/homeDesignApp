@@ -7,7 +7,11 @@ import { wallLength } from '../core/model.js';
 export function createPlanCanvas(canvas, { project, controller, planView, state, levelId, onSelect }) {
   const ctx = canvas.getContext('2d');
   const notifySelect = () => { if (onSelect) onSelect(); };
-  const level = () => project.levels.find((l) => l.id === levelId) || project.levels[0];
+  let activeLevelId = levelId;                    // retargetable so the plan follows the active storey
+  const level = () => project.levels.find((l) => l.id === activeLevelId) || project.levels[0];
+  // Point the plan surface at a different storey (multi-level editing). The plan only ever
+  // draws one level at a time — the storey the user is editing.
+  const setLevel = (id) => { activeLevelId = id; };
 
   function resize() {
     const dpr = Math.min(devicePixelRatio || 1, 2);
@@ -121,5 +125,5 @@ export function createPlanCanvas(canvas, { project, controller, planView, state,
   canvas.addEventListener('dblclick', () => { controller.finishChain(); draw(); });
   canvas.addEventListener('contextmenu', (e) => { e.preventDefault(); controller.finishChain(); draw(); });
 
-  return { draw, resize, frameModel };
+  return { draw, resize, frameModel, setLevel };
 }

@@ -129,6 +129,53 @@
       #snap-panel input:disabled, #snap-panel select:disabled { opacity: .4; cursor: default; }
       #snap-panel .sp-unit { color: #8a7c6c; }
       #snap-panel .sp-hint { color: #8a7c6c; font-size: 10.5px; margin-top: 9px; line-height: 1.4; }
+
+      /* Pro-seam multi-level (storey) editing — a popover under the "Levels…" toolbar
+         button. Hidden in Simple (the seam); revealed in Pro. Lists storeys top-to-bottom;
+         the active one (being edited in plan) is highlighted. Add / remove / rename / set
+         storey height, each an undoable model command. */
+      #level-group { display: none; }            /* shown only in Pro (isAvailable gate) */
+      #level-group.on { display: flex; }
+      #level-btn.armed { background: #6b5b4b; color: #fff; border-color: #6b5b4b; }
+      #level-panel {
+        position: fixed; z-index: 45; display: none;
+        background: #f4efe7; border: 1px solid #cbb2a0; border-radius: 11px;
+        box-shadow: 0 12px 34px rgba(43,38,34,.28); padding: 12px 14px; width: 268px;
+        font-size: 12.5px;
+      }
+      #level-panel.open { display: block; }
+      #level-panel .lp-title { font-family: Georgia, serif; font-weight: 700; font-size: 13.5px; margin-bottom: 8px; }
+      #level-list { display: flex; flex-direction: column; gap: 5px; }
+      .lv-row {
+        display: flex; align-items: center; gap: 6px; padding: 5px 6px;
+        border: 1px solid #d8c9b8; border-radius: 8px; background: #fff;
+      }
+      .lv-row.active { border-color: #6b5b4b; background: #fbf6ee; box-shadow: inset 3px 0 0 #6b5b4b; }
+      .lv-row .lv-pick { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; cursor: pointer; text-align: left; background: none; border: none; font: inherit; color: #2b2622; padding: 0; }
+      .lv-row .lv-name {
+        font: inherit; font-weight: 600; width: 100%; padding: 1px 3px; border: 1px solid transparent;
+        border-radius: 4px; background: transparent; color: #2b2622;
+      }
+      .lv-row .lv-name:focus { outline: none; border-color: #c3ab97; background: #fff; }
+      .lv-row .lv-elev { font-size: 10px; color: #8a7c6c; font-variant-numeric: tabular-nums; }
+      .lv-row .lv-h {
+        font: inherit; width: 52px; padding: 3px 5px; text-align: right;
+        border: 1px solid #c3ab97; border-radius: 6px; background: #fff; color: #2b2622;
+        font-variant-numeric: tabular-nums;
+      }
+      .lv-row .lv-del {
+        font: inherit; padding: 3px 7px; border: 1px solid #c3ab97; border-radius: 6px;
+        background: #fff; cursor: pointer; color: #a33;
+      }
+      .lv-row .lv-del:hover { background: #fbeaea; }
+      .lv-row .lv-del:disabled { opacity: .3; cursor: default; color: #999; }
+      #level-add {
+        font: inherit; width: 100%; margin-top: 9px; padding: 6px; cursor: pointer;
+        border: 1px dashed #c3ab97; border-radius: 8px; background: #fff; color: #2b2622;
+      }
+      #level-add:hover { background: #fbf7f0; border-style: solid; }
+      #level-panel .lp-unit { color: #8a7c6c; }
+      #level-panel .lp-hint { color: #8a7c6c; font-size: 10.5px; margin-top: 9px; line-height: 1.4; }
     </style>
   </head>
   <body>
@@ -173,6 +220,9 @@
         <div class="group" id="snap-group" title="Snapping &amp; constraints (Pro)">
           <button id="snap-btn" title="Grid / vertex / angle snapping settings">Snap…</button>
         </div>
+        <div class="group" id="level-group" title="Storeys / levels (Pro)">
+          <button id="level-btn" title="Add, remove, rename storeys and set the one you're editing">Levels…</button>
+        </div>
         <span class="hint" id="toolhint">Select a starter or draw a room</span>
       </div>
       <div id="main">
@@ -206,6 +256,12 @@
         </select>
       </div>
       <div class="sp-hint">Corner snap keeps rooms watertight. Angle lock constrains a drawn wall to the chosen increment.</div>
+    </div>
+    <div id="level-panel" role="dialog" aria-label="Storeys">
+      <div class="lp-title">Storeys</div>
+      <div id="level-list"></div>
+      <button id="level-add" title="Add a storey on top of the stack">+ Add storey</button>
+      <div class="lp-hint">Click a storey to edit it in the plan. Height sets the floor-to-floor; upper storeys stack on it automatically.</div>
     </div>
     <div id="picker" aria-modal="true" role="dialog" aria-label="Choose a template">
       <div id="picker-card">

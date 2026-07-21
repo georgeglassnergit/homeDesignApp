@@ -127,6 +127,19 @@ export function wallLength(wall) {
   return Math.hypot(wall.b.x - wall.a.x, wall.b.z - wall.a.z);
 }
 
+// Recompute each level's floor elevation so storeys stack contiguously from the ground up
+// (index 0 = ground floor at elevation 0). Every level sits on the roof of the one beneath.
+// Pure data mutation — the multi-level edit commands call this to keep storeys stacked with
+// no gaps or overlaps after an add / remove / height change. It runs only on a storey edit
+// (never on load/save), so it never rewrites an untouched project's saved elevations.
+export function stackElevations(levels) {
+  if (levels.length) levels[0].elevation = 0;
+  for (let i = 1; i < levels.length; i++) {
+    levels[i].elevation = levels[i - 1].elevation + levels[i - 1].height;
+  }
+  return levels;
+}
+
 export function projectCounts(project) {
   let walls = 0, openings = 0, rooms = 0;
   for (const lvl of project.levels) { walls += lvl.walls.length; openings += lvl.openings.length; rooms += lvl.rooms.length; }
@@ -153,6 +166,7 @@ export function validateProject(project) {
   if (project.schemaVersion !== SCHEMA_VERSION) errors.push(`schemaVersion ${project.schemaVersion} != ${SCHEMA_VERSION}`);
   if (!Array.isArray(project.levels)) errors.push('levels must be an array');
   for (const lvl of project.levels || []) {
+    if (!(lvl.height > 0)) errors.push(`level ${lvl.id}: height must be > 0`);
     const wallIds = new Set(lvl.walls.map(w => w.id));
     for (const w of lvl.walls) {
       if (!(w.thickness > 0)) errors.push(`wall ${w.id}: thickness must be > 0`);

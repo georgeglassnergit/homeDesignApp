@@ -6,12 +6,12 @@
 // src/core/model.js: createWall/createOpening (near-edge offset), deterministic ids,
 // and the Phase 1 lossless save round-trip surviving every edit.
 import {
-  createProject, createLevel, createWall, createOpening, validateProject,
-  serialize, deserialize, wallLength, findLevel, findWall, findOpening, _resetIds,
+  createProject, createLevel, createWall, createOpening, createRoof, validateProject,
+  serialize, deserialize, wallLength, findLevel, findWall, findOpening, stackElevations, _resetIds,
 } from '../core/model.js';
 import { parseLength, formatLength, UNIT } from '../core/units.js';
 import { isAvailable, availableTools, createAppState, MODE, TOOL, VIEW } from '../app/state.js';
-import { addWall, moveWallVertex, removeWall, addOpening, removeOpening, loadTemplate, composite, setView, resizeWall, resizeOpening } from '../edit/commands.js';
+import { addWall, moveWallVertex, removeWall, addOpening, removeOpening, loadTemplate, composite, setView, resizeWall, resizeOpening, addLevel, removeLevel, renameLevel, setLevelHeight, setLevelRoof } from '../edit/commands.js';
 // Selection inspector — pure descriptor + edit builder (the Simple/Pro exact-dimension seam).
 // Must stay three-free / DOM-free; importing under Node is itself the separation guard.
 import { describeSelection, buildDimensionEdit } from '../app/inspector.js';
@@ -595,6 +595,99 @@ ok(!importsThree("// three is great but this is a comment, not an import"), '30h
 for (const pureFile of ['core/model.js', 'core/units.js', 'app/state.js', 'templates/starters.js', 'edit/tools.js', 'edit/snapping.js', 'viewer/cutaway.js', 'viewer/walk.js']) {
   ok(!threeImporters.has(pureFile), `30i pure module stays engine-free: ${pureFile}`);
 }
+
+// ---- 31) multi-level (storey) editing — the Pro-seam "multi-level" feature ------------
+// The model has always carried Levels[]; these commands let a Pro user stack storeys and
+// the scene builder already renders each by elevation. Every command is lossless (undo is
+// byte-identical) and keeps the storeys contiguous (each floor sits on the one below).
+
+// 31a-b) stackElevations is a pure, contiguous, bottom-to-top stack.
+const st = [createLevel({ height: 2.7, elevation: 0 }), createLevel({ height: 3.0 }), createLevel({ height: 2.5 })];
+stackElevations(st);
+ok(st[0].elevation === 0 && near(st[1].elevation, 2.7) && near(st[2].elevation, 5.7), '31a stackElevations stacks storeys contiguously bottom-to-top');
+const st2 = [createLevel({ height: 2.7, elevation: 1.0 }), createLevel({ height: 2.4 })];  // ground re-anchors to 0
+stackElevations(st2);
+ok(st2[0].elevation === 0 && near(st2[1].elevation, 2.7), '31b stackElevations anchors the ground storey at 0 and stacks up');
+
+// build a controlled single-storey project with a roof
+_resetIds();
+const mlProj = createProject({ levels: [createLevel({
+  id: 'G', name: 'Ground floor', height: 2.7, roof: createRoof({ type: 'flat' }),
+  walls: [createWall({ x: 0, z: 0 }, { x: 4, z: 0 }, { id: 'w1' }), createWall({ x: 4, z: 0 }, { x: 4, z: 3 }, { id: 'w2' })],
+})] });
+ok(validateProject(mlProj).ok, '31c base single-storey project validates');
+const mlHist = new History(mlProj);
+
+// 31d-i) addLevel: appends on top, stacks, moves the roof up; do/undo/redo lossless.
+const beforeAdd = serialize(mlProj);
+const up = createLevel({ id: 'U', name: 'Upper', height: 2.7, roof: createRoof({ type: 'flat' }) });
+mlHist.execute(composite('Add storey', [addLevel(up), setLevelRoof('G', null)]));
+ok(mlProj.levels.length === 2, '31d addLevel appended a second storey');
+ok(near(findLevel(mlProj, 'U').elevation, 2.7), '31e new storey stacks on the ground floor (elevation 2.7)');
+ok(findLevel(mlProj, 'G').roof === null && !!findLevel(mlProj, 'U').roof, '31f roof moved up to the new top storey');
+ok(validateProject(mlProj).ok, '31g two-storey project validates');
+const addSer = serialize(mlProj);
+ok(serialize(deserialize(addSer)) === addSer, '31h two-storey project round-trips lossless');
+mlHist.undo();
+ok(serialize(mlProj) === beforeAdd, '31i undo add-storey restores byte-identical (roof back on ground)');
+mlHist.redo();
+ok(serialize(mlProj) === addSer, '31j redo add-storey re-applies byte-identical');
+
+// 31k-l) setLevelHeight: raising a lower storey pushes everything above it up; lossless undo.
+const beforeH = serialize(mlProj);
+mlHist.execute(setLevelHeight('G', 3.2));
+ok(near(findLevel(mlProj, 'G').height, 3.2) && near(findLevel(mlProj, 'U').elevation, 3.2), '31k raising the ground storey height pushes the upper storey up');
+mlHist.undo();
+ok(serialize(mlProj) === beforeH, '31l undo setLevelHeight restores byte-identical (heights + elevations)');
+
+// 31m-n) renameLevel is a label-only, lossless edit.
+const beforeN = serialize(mlProj);
+mlHist.execute(renameLevel('U', 'Bedrooms'));
+ok(findLevel(mlProj, 'U').name === 'Bedrooms', '31m renameLevel set the storey name');
+mlHist.undo();
+ok(serialize(mlProj) === beforeN, '31n undo rename restores byte-identical');
+
+// 31o-q) removeLevel restacks the survivors; lossless undo restores level + elevations.
+const beforeR = serialize(mlProj);
+mlHist.execute(removeLevel('G'));
+ok(mlProj.levels.length === 1 && findLevel(mlProj, 'U'), '31o removeLevel removed the named storey');
+ok(near(findLevel(mlProj, 'U').elevation, 0), '31p the remaining storey restacks down to elevation 0');
+mlHist.undo();
+ok(serialize(mlProj) === beforeR, '31q undo removeLevel restores the storey + all elevations byte-identical');
+
+// 31r-s) removeLevel refuses to remove the last storey (a home needs a floor).
+const solo = createProject({ levels: [createLevel({ id: 'S', height: 2.7 })] });
+ok(threw(() => removeLevel('S').do(solo)), '31r removeLevel refuses to remove the last storey');
+ok(solo.levels.length === 1, '31s the last storey survives the refused removal');
+
+// 31t-u) setLevelRoof clears/sets a roof losslessly.
+const mlRp = createProject({ levels: [createLevel({ id: 'R', height: 2.7, roof: createRoof({ type: 'flat' }) })] });
+const mlRBefore = serialize(mlRp);
+const mlRc = setLevelRoof('R', null);
+mlRc.do(mlRp);
+ok(findLevel(mlRp, 'R').roof === null, '31t setLevelRoof(null) clears the roof');
+mlRc.undo(mlRp);
+ok(serialize(mlRp) === mlRBefore, '31u undo setLevelRoof restores the roof byte-identical');
+
+// 31v) validateProject now rejects a non-positive storey height.
+ok(!validateProject(createProject({ levels: [createLevel({ id: 'B', height: 0 })] })).ok, '31v validateProject rejects a non-positive storey height');
+
+// 31w-z) active-level integration: drawing targets the active storey, not the ground floor.
+_resetIds();
+const swProj = createProject({ levels: [
+  createLevel({ id: 'G2', name: 'Ground', height: 2.7 }),
+  createLevel({ id: 'U2', name: 'Upper', height: 2.7, elevation: 2.7 }),
+] });
+const swState = createAppState({ activeLevelId: 'U2' });
+ok(swState.activeLevelId === 'U2', '31w createAppState carries the active-level id');
+swState.setActiveLevel('G2'); ok(swState.activeLevelId === 'G2', '31x setActiveLevel switches the active storey');
+swState.setActiveLevel('U2');
+const swTC = new ToolController({ state: swState, history: new History(swProj), project: swProj, planView: createPlanView({ width: 400, height: 400 }), levelId: swState.activeLevelId, rebuild: () => {} });
+swTC.setTool(TOOL.DRAW_WALL);
+swTC.pointerDown({ x: 0, z: 0 });
+swTC.pointerDown({ x: 3, z: 0 });
+ok(findLevel(swProj, 'U2').walls.length === 1 && findLevel(swProj, 'G2').walls.length === 0, '31y drawing lands on the active storey (upper), not the ground floor');
+ok(serialize(deserialize(serialize(swProj))) === serialize(swProj), '31z multi-storey edits stay lossless');
 
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'} — ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
