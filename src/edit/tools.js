@@ -8,6 +8,7 @@ import { TOOL } from '../app/state.js';
 import { createWall, createOpening, wallLength, findLevel, findWall } from '../core/model.js';
 import { addWall, moveWallVertex, removeWall, addOpening, removeOpening, composite } from './commands.js';
 import { snapPoint } from './snapping.js';
+import { measureDistance } from './measure.js';
 
 const MIN_WALL = 0.05;        // ignore accidental zero-length wall clicks (m)
 const VERTEX_TOL_PX = 12;     // grab radius for corner drag
@@ -19,6 +20,7 @@ export const TOOL_FEATURE = {
   [TOOL.DRAW_WALL]: 'draw-wall',
   [TOOL.PLACE_DOOR]: 'place-door',
   [TOOL.PLACE_WINDOW]: 'place-window',
+  [TOOL.MEASURE]: 'measure-tool',    // Pro-only ruler
 };
 
 export class ToolController {
@@ -29,6 +31,7 @@ export class ToolController {
     this.onMessage = onMessage || (() => {});
     this._chain = null;    // in-progress wall polyline: { prev:{x,z} }
     this._drag = null;     // in-progress corner drag: { verts:[{wallId,end}], from:{x,z}, to:{x,z} }
+    this._measure = null;  // ruler view-state: { from:{x,z}, to:{x,z}|null, complete:bool } (never model)
     this.preview = null;   // rubber-band point for the plan renderer (view-only)
   }
 
@@ -40,7 +43,7 @@ export class ToolController {
   setTool(name) {
     // Simple/Pro seam: only switch to a tool available in the current mode.
     this.state.setTool(name);
-    this._chain = null; this._drag = null; this.preview = null;
+    this._chain = null; this._drag = null; this._measure = null; this.preview = null;
     return this.state.activeTool === name;
   }
 
@@ -61,6 +64,7 @@ export class ToolController {
       case TOOL.DRAW_WALL:   return this._drawWallDown(world);
       case TOOL.PLACE_DOOR:  return this._placeOpeningDown(world, 'door');
       case TOOL.PLACE_WINDOW:return this._placeOpeningDown(world, 'window');
+      case TOOL.MEASURE:     return this._measureDown(world);
       case TOOL.SELECT:
       default:               return this._selectDown(world);
     }
@@ -69,6 +73,11 @@ export class ToolController {
   pointerMove(world) {
     if (this._drag) { this._drag.to = this._snap(world, { excludeKeys: this._drag.excludeKeys }); this.preview = this._drag.to; return; }
     if (this._chain) { this.preview = this._snap(world, { anchor: this._chain.prev }); return; }
+    // ruler: live-preview the second endpoint (snapped to corners/grid) until the user clicks it
+    if (this.state.activeTool === TOOL.MEASURE && this._measure && !this._measure.complete) {
+      this._measure.to = this._snap(world, { anchor: this._measure.from });
+      return;
+    }
     this.preview = null;
   }
 
@@ -116,7 +125,30 @@ export class ToolController {
     this._chain.prev = p; this.preview = p;
   }
 
-  finishChain() { this._chain = null; this.preview = null; }
+  finishChain() { this._chain = null; this.preview = null; this._measure = null; }
+
+  // --- measure (Pro-seam ruler): click two plan points; read the distance ------
+  // Pure VIEW state — no command, no model mutation, no rebuild. First click sets the
+  // anchor; the second (angle/vertex-snapped to the anchor) completes it; a third click
+  // starts a fresh measurement. Snapping to corners means measuring a wall lands exactly.
+  _measureDown(world) {
+    if (!this._measure || this._measure.complete) {
+      this._measure = { from: this._snap(world), to: null, complete: false };
+      this._emit('Click a second point to measure');
+      return;
+    }
+    this._measure.to = this._snap(world, { anchor: this._measure.from });
+    this._measure.complete = true;
+    this._emit(`Distance: ${measureDistance(this._measure.from, this._measure.to).toFixed(3)} m`);
+  }
+
+  // The current measurement for the plan renderer (view-only). Returns the committed
+  // segment, or the live from→preview segment while the second point is being placed.
+  measureSegment() {
+    const m = this._measure;
+    if (!m || !m.from || !m.to) return null;
+    return { from: m.from, to: m.to, complete: m.complete };
+  }
 
   // Rubber-band segment for the plan renderer (view-only; no model access needed).
   previewSegment() {
