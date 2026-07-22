@@ -44,6 +44,7 @@ export function availableTools(mode) {
 // Tool ids the S1 interaction layer switches between (the state machine's states).
 export const TOOL = Object.freeze({
   SELECT: 'select', DRAW_WALL: 'draw-wall', PLACE_DOOR: 'place-door', PLACE_WINDOW: 'place-window',
+  MEASURE: 'measure',   // Pro-seam ruler: click two points, read the distance (no model change)
 });
 export const VIEW = Object.freeze({ EXTERIOR: 'exterior', CUTAWAY: 'cutaway' });
 export const CAMERA = Object.freeze({ ORBIT: 'orbit', WALK: 'walk' });

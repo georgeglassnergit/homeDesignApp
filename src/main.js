@@ -417,7 +417,7 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
     const modeButtons = [...document.querySelectorAll('#modes button')];
     const syncModeButtons = () => modeButtons.forEach((b) => b.classList.toggle('active', b.dataset.mode === app.mode));
     modeButtons.forEach((b) => b.addEventListener('click', () => {
-      app.setMode(b.dataset.mode); syncModeButtons(); syncSnapSeam(); syncLevelSeam(); syncRoofSeam(); renderInspector(); updateStatus();
+      app.setMode(b.dataset.mode); syncModeButtons(); syncSnapSeam(); syncLevelSeam(); syncRoofSeam(); syncMeasureSeam(); renderInspector(); updateStatus();
     }));
 
     // --- display units toggle (m ↔ ft-in) — storage stays metric; this is display only ---
@@ -435,10 +435,23 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       [TOOL.DRAW_WALL]: 'Click each corner to draw walls · Esc or right-click ends the run',
       [TOOL.PLACE_DOOR]: 'Click a wall to drop a door',
       [TOOL.PLACE_WINDOW]: 'Click a wall to drop a window',
+      [TOOL.MEASURE]: 'Click two points to measure the distance · snaps to corners',
     };
     toolButtons.forEach((b) => b.addEventListener('click', () => {
       controller.setTool(b.dataset.tool); syncToolButtons(); hint(HINTS[app.activeTool] || ''); updateStatus();
+      plan.draw();   // clearing/refreshing the ruler is a redraw, not a rebuild
     }));
+
+    // The Measure tool is the Pro-seam 'measure-tool' row: its button shows only in Pro,
+    // and leaving Pro (or switching tools) drops any active ruler back to Select. Single gate.
+    const measureBtn = $('tool-measure');
+    function syncMeasureSeam() {
+      const on = isAvailable('measure-tool', app.mode);
+      if (measureBtn) measureBtn.classList.toggle('on', on);
+      if (!on && app.activeTool === TOOL.MEASURE) {
+        controller.setTool(TOOL.SELECT); syncToolButtons(); hint(''); plan.draw();
+      }
+    }
 
     $('delete').addEventListener('click', () => controller.deleteSelection());
     $('undo').addEventListener('click', () => controller.undo());
@@ -579,6 +592,7 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
     syncSnapSeam();
     syncLevelSeam();
     syncRoofSeam();
+    syncMeasureSeam();
     renderLevels();
     renderInspector();
     updateStatus();
@@ -599,7 +613,7 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       // inspector / Simple-Pro seam handles (deterministic driving from the headless harness)
       __inspect: () => describeSelection(project, app.selection, { mode: app.mode, units: app.units }),
       __commitField: (key, raw) => { commitField(key, raw); return $('ins-msg') ? $('ins-msg').textContent : ''; },
-      __setMode: (m) => { app.setMode(m); syncModeButtons(); syncSnapSeam(); syncLevelSeam(); syncRoofSeam(); renderInspector(); updateStatus(); },
+      __setMode: (m) => { app.setMode(m); syncModeButtons(); syncSnapSeam(); syncLevelSeam(); syncRoofSeam(); syncMeasureSeam(); renderInspector(); updateStatus(); },
       __setUnits: (u) => { app.setUnits(u); syncUnitButtons(); renderInspector(); },
       // snapping/constraint seam handles (deterministic driving from the headless harness)
       __snap: () => app.snap, __setSnap: (partial) => { app.setSnap(partial); syncSnapControls(); plan.draw(); return app.snap; },
@@ -618,6 +632,11 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       __roof: () => { const r = (roofBearingLevel() || {}).roof; return r ? { levelId: roofBearingLevel().id, type: r.type, pitch: r.pitch } : null; },
       __setRoofType: (patch) => { applyRoof(patch); const r = (roofBearingLevel() || {}).roof; return r ? { type: r.type, pitch: r.pitch } : null; },
       __roofSeamVisible: () => roofGroup.classList.contains('on'),
+      // measure-tool (Pro-seam ruler) handles — deterministic driving from the headless harness
+      __setTool: (t) => { controller.setTool(t); syncToolButtons(); hint(HINTS[app.activeTool] || ''); plan.draw(); return app.activeTool; },
+      __measureSeamVisible: () => !!(measureBtn && measureBtn.classList.contains('on')),
+      __measureClick: (x, z) => { controller.pointerDown({ x, z }); plan.draw(); return window.__measure(); },
+      __measure: () => { const s = controller.measureSegment(); return s ? { from: s.from, to: s.to, complete: s.complete, meters: Math.hypot(s.to.x - s.from.x, s.to.z - s.from.z) } : null; },
     });
     window.__selftest = () => { const j = serialize(project); const p = deserialize(j); return { valid: validateProject(p).ok, lossless: serialize(p) === j, counts: projectCounts(p) }; };
   } catch (e) {

@@ -14,6 +14,8 @@ import { isAvailable, availableTools, createAppState, MODE, TOOL, VIEW } from '.
 import { addWall, moveWallVertex, removeWall, addOpening, removeOpening, loadTemplate, composite, setView, resizeWall, resizeOpening, addLevel, removeLevel, renameLevel, setLevelHeight, setLevelRoof, setRoofType } from '../edit/commands.js';
 // Pure roof-shape math (gable/hip) — must stay three-free (importing under Node is the guard).
 import { ROOF_TYPES, DEFAULT_ROOF_PITCH, isPitched, roofFootprint, roofSolid, pitchRise } from '../core/roofShape.js';
+// Pure measure-tool math (the Pro-seam ruler) — three-free (importing under Node is the guard).
+import { measureDistance, measureMidpoint, describeMeasure } from '../edit/measure.js';
 // Selection inspector — pure descriptor + edit builder (the Simple/Pro exact-dimension seam).
 // Must stay three-free / DOM-free; importing under Node is itself the separation guard.
 import { describeSelection, buildDimensionEdit } from '../app/inspector.js';
@@ -760,6 +762,54 @@ ok(!validateProject(createProject({ levels: [roofLevel(createRoof({ type: 'hip',
 
 // 32x) the roof-editor seam is Pro-only (dormant in Simple).
 ok(!isAvailable('roof-editor', MODE.SIMPLE) && isAvailable('roof-editor', MODE.PRO), '32x roof-editor is a Pro-seam feature');
+
+// ---- 33) measure tool (Pro-seam ruler) — pure distance math + tool state machine ------
+_resetIds();
+// 33a-c) pure math.
+ok(near(measureDistance({ x: 0, z: 0 }, { x: 3, z: 4 }), 5), '33a measureDistance = straight-line plan distance');
+ok(measureMidpoint({ x: 0, z: 0 }, { x: 4, z: 2 }).x === 2 && measureMidpoint({ x: 0, z: 0 }, { x: 4, z: 2 }).z === 1, '33b measureMidpoint is the segment centre');
+ok(describeMeasure(null) === null && describeMeasure({ from: { x: 0, z: 0 }, to: null }) === null, '33c describeMeasure needs both endpoints');
+const md = describeMeasure({ from: { x: 0, z: 0 }, to: { x: 0, z: 2.5 }, complete: true }, UNIT.METRIC);
+ok(near(md.meters, 2.5) && md.label === formatLength(2.5, UNIT.METRIC) && md.complete === true, '33d describeMeasure carries meters + units label + complete');
+const mdImp = describeMeasure({ from: { x: 0, z: 0 }, to: { x: 0, z: 3.048 } }, UNIT.IMPERIAL);
+ok(mdImp.label === formatLength(3.048, UNIT.IMPERIAL) && mdImp.complete === false, '33e describeMeasure formats imperial + defaults complete=false');
+
+// 33f-l) the tool state machine: two clicks measure, a third restarts, no model mutation.
+const mProj = createProject({ levels: [createLevel({ id: 'M', name: 'G', height: 2.7, walls: [
+  createWall({ x: 0, z: 0 }, { x: 4, z: 0 }, { id: 'mw' }),
+] })] });
+const mBefore = serialize(mProj);
+const mState = createAppState({ mode: MODE.PRO, activeLevelId: 'M' });
+const mHist = new History(mProj);
+const mTC = new ToolController({ state: mState, history: mHist, project: mProj, planView: createPlanView({ width: 400, height: 400 }), levelId: 'M', rebuild: () => {} });
+mTC.setTool(TOOL.MEASURE);
+ok(mState.activeTool === TOOL.MEASURE, '33f the measure tool activates');
+ok(mTC.measureSegment() === null, '33g no ruler before the first click');
+mTC.pointerDown({ x: 0, z: 0 });
+ok(mTC.measureSegment() === null, '33h one click sets the anchor but is not yet a segment');
+mTC.pointerDown({ x: 3, z: 0 });
+let mseg = mTC.measureSegment();
+ok(mseg && mseg.complete && near(measureDistance(mseg.from, mseg.to), 3), '33i the second click completes a 3 m measurement');
+ok(serialize(mProj) === mBefore && mHist.undoStack.length === 0, '33j measuring mutates NOTHING — no model change, no command on the stack');
+// a third click starts a fresh measurement (anchor only, no segment yet)
+mTC.pointerDown({ x: 1, z: 1 });
+ok(mTC.measureSegment() === null, '33k a third click restarts the ruler from a new anchor');
+// switching tools clears the ruler
+mTC.pointerDown({ x: 2, z: 2 });
+ok(mTC.measureSegment() !== null, '33l a completed ruler survives until the tool changes');
+mTC.setTool(TOOL.SELECT);
+ok(mTC.measureSegment() === null, '33m switching tools drops the ruler');
+
+// 33n) live preview: after one click, pointerMove yields a previewable segment (dashed, not complete).
+mTC.setTool(TOOL.MEASURE);
+mTC.pointerDown({ x: 0, z: 0 });
+mTC.pointerMove({ x: 0, z: 2 });
+const mprev = mTC.measureSegment();
+ok(mprev && mprev.complete === false && near(measureDistance(mprev.from, mprev.to), 2), '33n live preview tracks the pointer before the second click');
+
+// 33o) the measure tool is a Pro-seam feature (dormant in Simple).
+ok(!isAvailable('measure-tool', MODE.SIMPLE) && isAvailable('measure-tool', MODE.PRO), '33o measure-tool is Pro-only');
+ok(availableTools(MODE.PRO).includes('measure-tool') && !availableTools(MODE.SIMPLE).includes('measure-tool'), '33p measure-tool appears in the Pro tool set only');
 
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'} — ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

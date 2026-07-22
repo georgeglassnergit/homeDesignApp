@@ -202,6 +202,10 @@
       #roof-panel input:disabled { opacity: .4; cursor: default; }
       #roof-panel .rp-val { flex: 0 0 auto; width: 30px; text-align: right; color: #8a7c6c; font-variant-numeric: tabular-nums; }
       #roof-panel .rp-hint { color: #8a7c6c; font-size: 10.5px; margin-top: 9px; line-height: 1.4; }
+
+      /* Measure tool (Pro seam: 'measure-tool') — the ruler button appears only in Pro. */
+      #tool-measure { display: none; }
+      #tool-measure.on { display: inline-block; }
     </style>
   </head>
   <body>
@@ -217,6 +221,7 @@
           <button data-tool="draw-wall" title="Click corners to draw walls; Esc ends the run">Draw&nbsp;wall</button>
           <button data-tool="place-door" title="Click a wall to add a door">Door</button>
           <button data-tool="place-window" title="Click a wall to add a window">Window</button>
+          <button data-tool="measure" id="tool-measure" title="Measure a distance between two points (Pro)">Measure</button>
         </div>
         <div class="sep"></div>
         <div class="group" id="views" title="Toggle exterior massing vs. interior cutaway">
