@@ -11,7 +11,9 @@ import {
 } from '../core/model.js';
 import { parseLength, formatLength, UNIT } from '../core/units.js';
 import { isAvailable, availableTools, createAppState, MODE, TOOL, VIEW } from '../app/state.js';
-import { addWall, moveWallVertex, removeWall, addOpening, removeOpening, loadTemplate, composite, setView, resizeWall, resizeOpening, addLevel, removeLevel, renameLevel, setLevelHeight, setLevelRoof } from '../edit/commands.js';
+import { addWall, moveWallVertex, removeWall, addOpening, removeOpening, loadTemplate, composite, setView, resizeWall, resizeOpening, addLevel, removeLevel, renameLevel, setLevelHeight, setLevelRoof, setRoofType } from '../edit/commands.js';
+// Pure roof-shape math (gable/hip) — must stay three-free (importing under Node is the guard).
+import { ROOF_TYPES, DEFAULT_ROOF_PITCH, isPitched, roofFootprint, roofSolid, pitchRise } from '../core/roofShape.js';
 // Selection inspector — pure descriptor + edit builder (the Simple/Pro exact-dimension seam).
 // Must stay three-free / DOM-free; importing under Node is itself the separation guard.
 import { describeSelection, buildDimensionEdit } from '../app/inspector.js';
@@ -688,6 +690,76 @@ swTC.pointerDown({ x: 0, z: 0 });
 swTC.pointerDown({ x: 3, z: 0 });
 ok(findLevel(swProj, 'U2').walls.length === 1 && findLevel(swProj, 'G2').walls.length === 0, '31y drawing lands on the active storey (upper), not the ground floor');
 ok(serialize(deserialize(serialize(swProj))) === serialize(swProj), '31z multi-storey edits stay lossless');
+
+// ---- 32) roof types beyond flat (gable/hip) — the Pro-seam "roof-editor" feature ------
+_resetIds();
+// 32a-c) type set + pitch helper.
+ok(ROOF_TYPES.includes('flat') && ROOF_TYPES.includes('gable') && ROOF_TYPES.includes('hip'), '32a ROOF_TYPES lists flat/gable/hip');
+ok(!isPitched('flat') && isPitched('gable') && isPitched('hip'), '32b isPitched: flat no, gable/hip yes');
+ok(near(pitchRise(2, 30), 2 * Math.tan(Math.PI / 6)) && pitchRise(2, 0) === 0 && pitchRise(-5, 30) === 0, '32c pitchRise = run·tan(pitch), clamps 0/negative run');
+
+// A predictable 6 (X) × 4 (Z) rectangular level, overhang 0 for exact footprint math.
+const roofLevel = (roof) => createLevel({
+  id: 'RF', height: 2.7, roof,
+  walls: [
+    createWall({ x: 0, z: 0 }, { x: 6, z: 0 }),
+    createWall({ x: 6, z: 0 }, { x: 6, z: 4 }),
+    createWall({ x: 6, z: 4 }, { x: 0, z: 4 }),
+    createWall({ x: 0, z: 4 }, { x: 0, z: 0 }),
+  ],
+});
+
+// 32d-e) roofFootprint: null with no walls; bbox expanded by overhang.
+ok(roofFootprint({ walls: [] }) === null, '32d roofFootprint is null for a wall-less level');
+const fpO = roofFootprint(roofLevel(createRoof({ type: 'gable', overhang: 0.5 })));
+ok(near(fpO.x0, -0.5) && near(fpO.x1, 6.5) && near(fpO.z0, -0.5) && near(fpO.z1, 4.5), '32e roofFootprint expands the wall bbox by the overhang');
+
+// 32f-j) gable shell over the 6×4 footprint (overhang 0).
+const fp = { x0: 0, x1: 6, z0: 0, z1: 4 };
+const baseY = 2.7, pitch = 30;
+const rise = pitchRise(2, pitch); // short half-span = D/2 = 2
+const gable = roofSolid('gable', fp, { baseY, pitch });
+ok(gable.triangleCount === 8 && gable.positions.length === 8 * 9, '32f gable = 8 closed triangles (2 slopes + 2 gable ends + bottom cap)');
+ok(near(gable.ridgeY, baseY + rise), '32g gable ridge height = eave + run·tan(pitch)');
+const gY = gable.positions.filter((_, i) => i % 3 === 1);
+ok(Math.min(...gY) >= baseY - 1e-9 && Math.max(...gY) <= gable.ridgeY + 1e-9, '32h no gable vertex dips below the eave or rises above the ridge');
+const gX = gable.positions.filter((_, i) => i % 3 === 0), gZ = gable.positions.filter((_, i) => i % 3 === 2);
+ok(Math.min(...gX) >= -1e-9 && Math.max(...gX) <= 6 + 1e-9 && Math.min(...gZ) >= -1e-9 && Math.max(...gZ) <= 4 + 1e-9, '32i every gable vertex stays inside the footprint');
+ok(gable.apex === null, '32j a gable has a ridge, not an apex');
+
+// 32k-m) hip shell: rectangle keeps a ridge; square degenerates to a pyramid apex.
+const hip = roofSolid('hip', fp, { baseY, pitch });
+ok(hip.triangleCount === 8 && hip.apex === null, '32k hip over a rectangle = 8 triangles (2 trapezoids + 2 hip ends + bottom), no apex');
+const hipSq = roofSolid('hip', { x0: 0, x1: 4, z0: 0, z1: 4 }, { baseY, pitch });
+ok(hipSq.apex !== null && near(hipSq.apex[0], 2) && near(hipSq.apex[2], 2), '32l a square hip is a pyramid — apex over the footprint centre');
+ok(hipSq.triangleCount === 6, '32m the pyramid drops its zero-area faces down to 6 triangles (4 sides + bottom)');
+
+// 32n-r) setRoofType command: do/undo/redo byte-lossless; guards.
+_resetIds();
+const rtProj = createProject({ levels: [roofLevel(createRoof({ type: 'flat' }))] });
+const rtBefore = serialize(rtProj);
+const rtHist = new History(rtProj);
+rtHist.execute(setRoofType('RF', { type: 'gable', pitch: 35 }));
+ok(findLevel(rtProj, 'RF').roof.type === 'gable' && findLevel(rtProj, 'RF').roof.pitch === 35, '32n setRoofType switches to gable and sets the pitch');
+ok(findLevel(rtProj, 'RF').roof.thickness === 0.15 && findLevel(rtProj, 'RF').roof.overhang === 0.3, '32o setRoofType leaves thickness/overhang/material untouched');
+ok(serialize(deserialize(serialize(rtProj))) === serialize(rtProj), '32p a gable roof round-trips losslessly');
+rtHist.undo();
+ok(serialize(rtProj) === rtBefore, '32q undo setRoofType restores the flat roof byte-identical');
+rtHist.redo();
+ok(findLevel(rtProj, 'RF').roof.type === 'gable' && findLevel(rtProj, 'RF').roof.pitch === 35, '32r redo re-applies the gable');
+// backfill: a roof with no pitch field gets the default when switched to a pitched type.
+const noPitch = createProject({ levels: [roofLevel({ type: 'flat', thickness: 0.15, overhang: 0.3, material: 'roof' })] });
+setRoofType('RF', { type: 'hip' }).do(noPitch);
+ok(findLevel(noPitch, 'RF').roof.pitch === DEFAULT_ROOF_PITCH, '32s switching a pitch-less roof to hip backfills the default pitch');
+ok(threw(() => setRoofType('RF', { type: 'gable' }).do(createProject({ levels: [createLevel({ id: 'RF', height: 2.7 })] }))), '32t setRoofType throws on a level with no roof');
+
+// 32u-w) validation rejects a bad roof type or an out-of-range pitch.
+ok(validateProject(createProject({ levels: [roofLevel(createRoof({ type: 'gable', pitch: 35 }))] })).ok, '32u a valid gable roof passes validation');
+ok(!validateProject(createProject({ levels: [roofLevel(createRoof({ type: 'mansard' }))] })).ok, '32v validateProject rejects an unknown roof type');
+ok(!validateProject(createProject({ levels: [roofLevel(createRoof({ type: 'hip', pitch: 95 }))] })).ok, '32w validateProject rejects an out-of-range roof pitch');
+
+// 32x) the roof-editor seam is Pro-only (dormant in Simple).
+ok(!isAvailable('roof-editor', MODE.SIMPLE) && isAvailable('roof-editor', MODE.PRO), '32x roof-editor is a Pro-seam feature');
 
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'} — ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

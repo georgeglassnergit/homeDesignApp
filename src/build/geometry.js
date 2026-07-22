@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { Brush, Evaluator, SUBTRACTION } from 'three-bvh-csg';
 import { wallLength } from '../core/model.js';
+import { roofFootprint, roofSolid, isPitched, DEFAULT_ROOF_PITCH } from '../core/roofShape.js';
 
 const _eval = new Evaluator();
 
@@ -50,9 +51,30 @@ export function buildFloorMesh(room, elevation, material) {
   return mesh;
 }
 
-// Flat roof slab covering the level's wall footprint (gable/hip = later phase).
+// Roof covering the level's wall footprint. Flat = a slab (unchanged from Phase 1);
+// gable/hip = a pitched shell whose SHAPE math lives in the pure core/roofShape.js
+// (unit-tested under Node) — this function only turns those vertices into a mesh.
 export function buildRoofMesh(level, material) {
   if (!level.walls.length) return null;
+  const type = (level.roof && level.roof.type) || 'flat';
+
+  if (isPitched(type)) {
+    const fp = roofFootprint(level);
+    if (!fp) return null;
+    const baseY = level.elevation + level.height;
+    const pitch = level.roof.pitch ?? DEFAULT_ROOF_PITCH;
+    const { positions } = roofSolid(type, fp, { baseY, pitch });
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geo.computeVertexNormals();
+    const mesh = new THREE.Mesh(geo, material);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    mesh.userData.kind = 'roof';
+    return mesh;
+  }
+
+  // flat slab
   let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
   for (const w of level.walls) for (const p of [w.a, w.b]) {
     minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);

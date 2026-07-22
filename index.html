@@ -176,6 +176,32 @@
       #level-add:hover { background: #fbf7f0; border-style: solid; }
       #level-panel .lp-unit { color: #8a7c6c; }
       #level-panel .lp-hint { color: #8a7c6c; font-size: 10.5px; margin-top: 9px; line-height: 1.4; }
+
+      /* Roof editor (Pro seam: 'roof-editor') — flat / gable / hip + pitch. Same
+         hidden-in-Simple / revealed-in-Pro pattern as the snap and level groups. */
+      #roof-group { display: none; }             /* shown only in Pro (isAvailable gate) */
+      #roof-group.on { display: flex; }
+      #roof-btn.armed { background: #6b5b4b; color: #fff; border-color: #6b5b4b; }
+      #roof-panel {
+        position: fixed; z-index: 45; display: none;
+        background: #f4efe7; border: 1px solid #cbb2a0; border-radius: 11px;
+        box-shadow: 0 12px 34px rgba(43,38,34,.28); padding: 12px 14px; width: 224px;
+        font-size: 12.5px;
+      }
+      #roof-panel.open { display: block; }
+      #roof-panel .rp-title { font-family: Georgia, serif; font-weight: 700; font-size: 13.5px; margin-bottom: 8px; }
+      #roof-panel .rp-types { display: flex; gap: 5px; margin-bottom: 10px; }
+      #roof-panel .rp-types button {
+        flex: 1; font: inherit; padding: 6px 4px; cursor: pointer;
+        border: 1px solid #c3ab97; border-radius: 7px; background: #fff; color: #2b2622;
+      }
+      #roof-panel .rp-types button.active { background: #6b5b4b; color: #fff; border-color: #6b5b4b; }
+      #roof-panel .rp-row { display: flex; align-items: center; gap: 8px; margin: 7px 0; }
+      #roof-panel .rp-row label { flex: 0 0 auto; }
+      #roof-panel input[type=range] { flex: 1; accent-color: #6b5b4b; cursor: pointer; }
+      #roof-panel input:disabled { opacity: .4; cursor: default; }
+      #roof-panel .rp-val { flex: 0 0 auto; width: 30px; text-align: right; color: #8a7c6c; font-variant-numeric: tabular-nums; }
+      #roof-panel .rp-hint { color: #8a7c6c; font-size: 10.5px; margin-top: 9px; line-height: 1.4; }
     </style>
   </head>
   <body>
@@ -223,6 +249,9 @@
         <div class="group" id="level-group" title="Storeys / levels (Pro)">
           <button id="level-btn" title="Add, remove, rename storeys and set the one you're editing">Levels…</button>
         </div>
+        <div class="group" id="roof-group" title="Roof shape (Pro)">
+          <button id="roof-btn" title="Flat / gable / hip roof and pitch">Roof…</button>
+        </div>
         <span class="hint" id="toolhint">Select a starter or draw a room</span>
       </div>
       <div id="main">
@@ -262,6 +291,20 @@
       <div id="level-list"></div>
       <button id="level-add" title="Add a storey on top of the stack">+ Add storey</button>
       <div class="lp-hint">Click a storey to edit it in the plan. Height sets the floor-to-floor; upper storeys stack on it automatically.</div>
+    </div>
+    <div id="roof-panel" role="dialog" aria-label="Roof shape">
+      <div class="rp-title">Roof shape</div>
+      <div class="rp-types" id="roof-types">
+        <button data-roof="flat" title="Flat slab">Flat</button>
+        <button data-roof="gable" title="Two slopes meeting at a ridge">Gable</button>
+        <button data-roof="hip" title="Slopes on all sides">Hip</button>
+      </div>
+      <div class="rp-row">
+        <label for="roof-pitch">Pitch</label>
+        <input id="roof-pitch" type="range" min="10" max="60" step="5" value="30">
+        <span class="rp-val" id="roof-pitch-val">30°</span>
+      </div>
+      <div class="rp-hint">Gable and hip roofs rise from the top storey's walls. Pitch is the slope; approximate visualization, not a framing spec.</div>
     </div>
     <div id="picker" aria-modal="true" role="dialog" aria-label="Choose a template">
       <div id="picker-card">

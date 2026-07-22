@@ -12,7 +12,7 @@ import { createPlanView } from './edit/planView.js';
 import { raycast, eventToNDC } from './edit/picking.js';
 import { createPlanCanvas } from './app/planCanvas.js';
 import { STARTERS } from './templates/starters.js';
-import { loadTemplate, setView, addLevel, removeLevel, renameLevel, setLevelHeight, setLevelRoof, composite } from './edit/commands.js';
+import { loadTemplate, setView, addLevel, removeLevel, renameLevel, setLevelHeight, setLevelRoof, setRoofType, composite } from './edit/commands.js';
 import { createDirtyTracker } from './app/dirty.js';
 import { planThumbnailSVG } from './app/thumbnail.js';
 
@@ -85,6 +85,7 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       syncViewButtons();
       renderInspector();   // selection may have changed (undo/redo/delete/template swap)
       renderLevels();      // storeys may have changed (add/remove/rename/height, or undo/redo)
+      renderRoof();        // roof type/pitch may have changed (undo/redo of a roof edit)
       updateStatus();
     }
 
@@ -352,11 +353,71 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       if (!on) toggleLevelPanel(false);
     }
 
+    // --- Roof editor (Pro seam: 'roof-editor') — flat / gable / hip + pitch -----------
+    // The pitched-roof SHAPE math is pure (core/roofShape.js, unit-tested); this only
+    // dispatches an undoable setRoofType command on the roof-bearing (top) storey and
+    // rebuilds. Hidden in Simple, revealed in Pro — the single isAvailable gate.
+    const roofGroup = $('roof-group'), roofBtn = $('roof-btn'), roofPanel = $('roof-panel');
+    const roofPitchInp = $('roof-pitch'), roofPitchVal = $('roof-pitch-val');
+    const roofTypeButtons = [...document.querySelectorAll('#roof-types button')];
+
+    // The roof caps the TOP storey (multi-level moves it up as storeys stack).
+    function roofBearingLevel() {
+      for (let i = project.levels.length - 1; i >= 0; i--) if (project.levels[i].roof) return project.levels[i];
+      return null;
+    }
+
+    function applyRoof(patch) {
+      const lvl = roofBearingLevel();
+      if (!lvl) return;
+      const cmd = history.execute(setRoofType(lvl.id, patch));
+      if (!validateProject(project).ok) { cmd.undo(project); history.undoStack.pop(); renderRoof(); return; } // never leave the model invalid
+      refresh();
+    }
+
+    function renderRoof() {
+      const roof = (roofBearingLevel() || {}).roof;
+      const type = (roof && roof.type) || 'flat';
+      const pitched = type === 'gable' || type === 'hip';
+      const pitch = (roof && roof.pitch != null) ? roof.pitch : 30;
+      roofTypeButtons.forEach((b) => b.classList.toggle('active', b.dataset.roof === type));
+      if (roofPitchInp) { roofPitchInp.value = pitch; roofPitchInp.disabled = !pitched; }
+      if (roofPitchVal) roofPitchVal.textContent = pitched ? `${pitch}°` : '—';
+      roofBtn.classList.toggle('armed', pitched);
+      roofBtn.disabled = !roof;
+    }
+
+    roofTypeButtons.forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); applyRoof({ type: b.dataset.roof }); }));
+    if (roofPitchInp) {
+      roofPitchInp.addEventListener('keydown', (e) => e.stopPropagation());
+      roofPitchInp.addEventListener('input', () => { if (roofPitchVal) roofPitchVal.textContent = `${roofPitchInp.value}°`; });
+      roofPitchInp.addEventListener('change', () => applyRoof({ pitch: parseFloat(roofPitchInp.value) }));
+    }
+    function positionRoofPanel() {
+      const r = roofBtn.getBoundingClientRect();
+      roofPanel.style.left = Math.max(8, Math.min(r.left, innerWidth - 240)) + 'px';
+      roofPanel.style.top = (r.bottom + 6) + 'px';
+    }
+    function toggleRoofPanel(force) {
+      const open = force === undefined ? !roofPanel.classList.contains('open') : force;
+      if (open) { renderRoof(); positionRoofPanel(); }
+      roofPanel.classList.toggle('open', open);
+    }
+    roofBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleRoofPanel(); });
+    roofPanel.addEventListener('click', (e) => e.stopPropagation());
+    addEventListener('click', () => toggleRoofPanel(false));   // click-away closes
+    function syncRoofSeam() {
+      const on = isAvailable('roof-editor', app.mode);
+      roofGroup.classList.toggle('on', on);
+      if (on) renderRoof();
+      else toggleRoofPanel(false);
+    }
+
     // --- Simple / Pro mode toggle (the single gate the whole UI reads from) ---
     const modeButtons = [...document.querySelectorAll('#modes button')];
     const syncModeButtons = () => modeButtons.forEach((b) => b.classList.toggle('active', b.dataset.mode === app.mode));
     modeButtons.forEach((b) => b.addEventListener('click', () => {
-      app.setMode(b.dataset.mode); syncModeButtons(); syncSnapSeam(); syncLevelSeam(); renderInspector(); updateStatus();
+      app.setMode(b.dataset.mode); syncModeButtons(); syncSnapSeam(); syncLevelSeam(); syncRoofSeam(); renderInspector(); updateStatus();
     }));
 
     // --- display units toggle (m ↔ ft-in) — storage stays metric; this is display only ---
@@ -517,6 +578,7 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
     syncUnitButtons();
     syncSnapSeam();
     syncLevelSeam();
+    syncRoofSeam();
     renderLevels();
     renderInspector();
     updateStatus();
@@ -537,7 +599,7 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       // inspector / Simple-Pro seam handles (deterministic driving from the headless harness)
       __inspect: () => describeSelection(project, app.selection, { mode: app.mode, units: app.units }),
       __commitField: (key, raw) => { commitField(key, raw); return $('ins-msg') ? $('ins-msg').textContent : ''; },
-      __setMode: (m) => { app.setMode(m); syncModeButtons(); syncSnapSeam(); syncLevelSeam(); renderInspector(); updateStatus(); },
+      __setMode: (m) => { app.setMode(m); syncModeButtons(); syncSnapSeam(); syncLevelSeam(); syncRoofSeam(); renderInspector(); updateStatus(); },
       __setUnits: (u) => { app.setUnits(u); syncUnitButtons(); renderInspector(); },
       // snapping/constraint seam handles (deterministic driving from the headless harness)
       __snap: () => app.snap, __setSnap: (partial) => { app.setSnap(partial); syncSnapControls(); plan.draw(); return app.snap; },
@@ -552,6 +614,10 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       __switchLevel: (id) => { switchLevel(id); return app.activeLevelId; },
       __setLevelHeight: (id, h) => { commitLevelHeight(id, String(h)); return project.levels.find((l) => l.id === id)?.height; },
       __renameLevel: (id, name) => { commitLevelName(id, name); return project.levels.find((l) => l.id === id)?.name; },
+      // roof-editor (gable/hip) seam handles — deterministic driving from the headless harness
+      __roof: () => { const r = (roofBearingLevel() || {}).roof; return r ? { levelId: roofBearingLevel().id, type: r.type, pitch: r.pitch } : null; },
+      __setRoofType: (patch) => { applyRoof(patch); const r = (roofBearingLevel() || {}).roof; return r ? { type: r.type, pitch: r.pitch } : null; },
+      __roofSeamVisible: () => roofGroup.classList.contains('on'),
     });
     window.__selftest = () => { const j = serialize(project); const p = deserialize(j); return { valid: validateProject(p).ok, lossless: serialize(p) === j, counts: projectCounts(p) }; };
   } catch (e) {
