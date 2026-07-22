@@ -4,6 +4,7 @@
 // Model/view separation: ZERO Three.js in here — commands only touch the plain Project.
 
 import { findLevel, findWall, findOpening, stackElevations } from '../core/model.js';
+import { DEFAULT_ROOF_PITCH } from '../core/roofShape.js';
 
 const clone = (v) => JSON.parse(JSON.stringify(v));
 
@@ -213,6 +214,31 @@ export function setLevelRoof(levelId, roof) {
       if (!l) throw new Error(`setLevelRoof: missing level ${levelId}`);
       prev = l.roof;
       l.roof = roof;
+    },
+    undo(project) {
+      const l = findLevel(project, levelId);
+      if (l) l.roof = prev;
+    },
+  };
+}
+
+// Change a storey roof's shape (flat / gable / hip) and/or pitch. The prior roof
+// is captured whole for a byte-lossless undo (the Phase 1 guarantee). Only the
+// roof's `type`/`pitch` fields change — thickness, overhang and material carry
+// through untouched. Missing pitch is backfilled to the default so a roof that
+// pre-dates the pitch field renders a sane slope once switched to gable/hip.
+export function setRoofType(levelId, { type, pitch } = {}) {
+  let prev;
+  return {
+    name: 'Set roof type',
+    do(project) {
+      const l = findLevel(project, levelId);
+      if (!l) throw new Error(`setRoofType: missing level ${levelId}`);
+      if (!l.roof) throw new Error(`setRoofType: level ${levelId} has no roof`);
+      prev = { ...l.roof };
+      if (type !== undefined) l.roof.type = type;
+      if (pitch !== undefined) l.roof.pitch = pitch;
+      if (l.roof.pitch === undefined) l.roof.pitch = DEFAULT_ROOF_PITCH;
     },
     undo(project) {
       const l = findLevel(project, levelId);

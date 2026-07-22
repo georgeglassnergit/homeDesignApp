@@ -5,6 +5,8 @@
 // Model/view separation: this file knows nothing about rendering.
 // ============================================================================
 
+import { ROOF_TYPES, isPitched } from './roofShape.js';
+
 export const SCHEMA_VERSION = 1;
 
 // "Approachable but correct" defaults — real-world dimensions so novices get
@@ -13,7 +15,7 @@ export const DEFAULTS = Object.freeze({
   wall:   { thickness: 0.12, height: 2.7 },          // 12 cm wall, 2.7 m ceiling
   door:   { width: 0.9,  height: 2.1, sill: 0.0 },    // standard interior door
   window: { width: 1.4,  height: 1.2, sill: 0.9 },    // sill 0.9 m off the floor
-  roof:   { type: 'flat', thickness: 0.15, overhang: 0.3 },
+  roof:   { type: 'flat', thickness: 0.15, overhang: 0.3, pitch: 30 }, // pitch (deg) used by gable/hip
   level:  { height: 2.7 },
 });
 
@@ -92,9 +94,10 @@ export function createRoom(points, opts = {}) {
 
 export function createRoof(opts = {}) {
   return {
-    type: opts.type || DEFAULTS.roof.type,     // 'flat' (gable/hip come in a later phase)
+    type: opts.type || DEFAULTS.roof.type,     // 'flat' | 'gable' | 'hip' (see core/roofShape.js)
     thickness: opts.thickness ?? DEFAULTS.roof.thickness,
     overhang: opts.overhang ?? DEFAULTS.roof.overhang,
+    pitch: opts.pitch ?? DEFAULTS.roof.pitch,  // slope in degrees; only affects gable/hip
     material: opts.material || 'roof',
   };
 }
@@ -182,6 +185,10 @@ export function validateProject(project) {
     }
     for (const r of lvl.rooms) {
       if (!Array.isArray(r.points) || r.points.length < 3) errors.push(`room ${r.id}: needs >= 3 points`);
+    }
+    if (lvl.roof) {
+      if (!ROOF_TYPES.includes(lvl.roof.type)) errors.push(`level ${lvl.id}: unknown roof type ${lvl.roof.type}`);
+      if (isPitched(lvl.roof.type) && !(lvl.roof.pitch > 0 && lvl.roof.pitch < 90)) errors.push(`level ${lvl.id}: roof pitch must be between 0 and 90 degrees`);
     }
   }
   return { ok: errors.length === 0, errors };
