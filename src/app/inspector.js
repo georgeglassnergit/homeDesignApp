@@ -6,10 +6,11 @@
 // parse feet-and-inches / metric via units.js. main.js renders this descriptor to DOM and
 // dispatches the edit through history; the Node test suite asserts on the descriptor + command
 // directly. ZERO Three.js and ZERO DOM in here (importing under Node is the separation guard).
-import { findWall, findOpening, wallLength } from '../core/model.js';
+import { findWall, findOpening, findRoom, wallLength } from '../core/model.js';
 import { isAvailable, MODE } from './state.js';
 import { formatLength, parseLength, UNIT } from '../core/units.js';
 import { resizeWall, resizeOpening } from '../edit/commands.js';
+import { describeRoom } from '../core/roomMeasure.js';
 
 // Locate the level + object a selection {kind,id} refers to, scanning every level so the
 // inspector works in multi-level projects (the model already supports them).
@@ -19,6 +20,9 @@ function locate(project, selection) {
     if (selection.kind === 'wall') {
       const w = findWall(lvl, selection.id);
       if (w) return { level: lvl, kind: 'wall', wall: w };
+    } else if (selection.kind === 'room') {
+      const r = findRoom(lvl, selection.id);
+      if (r) return { level: lvl, kind: 'room', room: r };
     } else {
       const o = findOpening(lvl, selection.id);
       if (o) return { level: lvl, kind: 'opening', opening: o };
@@ -40,6 +44,21 @@ export const NONNEG_FIELDS = Object.freeze(new Set(['sill', 'offset']));
 export function describeSelection(project, selection, { mode = MODE.SIMPLE, units = UNIT.METRIC } = {}) {
   const loc = locate(project, selection);
   if (!loc) return null;
+  // A room is a read-only MEASUREMENT readout (floor area + perimeter derived from its
+  // polygon) — there are no exact-entry inputs to edit here, in Simple OR Pro, so the
+  // Simple/Pro seam doesn't apply. `measurement: true` tells the UI to show the neutral
+  // footer instead of the "switch to Pro" hint. No model fields, no command: pure derived.
+  if (loc.kind === 'room') {
+    const m = describeRoom(loc.room, units);
+    if (!m) return null;
+    return {
+      title: m.name, type: 'room', id: selection.id, editable: false, measurement: true,
+      fields: [
+        { key: 'area',      label: 'Floor area', text: m.areaLabel },
+        { key: 'perimeter', label: 'Perimeter',  text: m.perimeterLabel },
+      ],
+    };
+  }
   const editable = isAvailable('exact-dimensions', mode);
   let title, fields;
   if (loc.kind === 'wall') {

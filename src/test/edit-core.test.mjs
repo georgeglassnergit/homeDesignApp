@@ -6,10 +6,12 @@
 // src/core/model.js: createWall/createOpening (near-edge offset), deterministic ids,
 // and the Phase 1 lossless save round-trip surviving every edit.
 import {
-  createProject, createLevel, createWall, createOpening, createRoof, validateProject,
-  serialize, deserialize, wallLength, findLevel, findWall, findOpening, stackElevations, _resetIds,
+  createProject, createLevel, createWall, createOpening, createRoom, createRoof, validateProject,
+  serialize, deserialize, wallLength, findLevel, findWall, findOpening, findRoom, stackElevations, _resetIds,
 } from '../core/model.js';
-import { parseLength, formatLength, UNIT } from '../core/units.js';
+// Pure room-measurement geometry (floor area / perimeter / centroid) — three-free (the guard).
+import { polygonArea, polygonPerimeter, polygonCentroid, describeRoom } from '../core/roomMeasure.js';
+import { parseLength, formatLength, formatArea, UNIT } from '../core/units.js';
 import { isAvailable, availableTools, createAppState, MODE, TOOL, VIEW } from '../app/state.js';
 import { addWall, moveWallVertex, removeWall, addOpening, removeOpening, loadTemplate, composite, setView, resizeWall, resizeOpening, addLevel, removeLevel, renameLevel, setLevelHeight, setLevelRoof, setRoofType } from '../edit/commands.js';
 // Pure roof-shape math (gable/hip) — must stay three-free (importing under Node is the guard).
@@ -810,6 +812,53 @@ ok(mprev && mprev.complete === false && near(measureDistance(mprev.from, mprev.t
 // 33o) the measure tool is a Pro-seam feature (dormant in Simple).
 ok(!isAvailable('measure-tool', MODE.SIMPLE) && isAvailable('measure-tool', MODE.PRO), '33o measure-tool is Pro-only');
 ok(availableTools(MODE.PRO).includes('measure-tool') && !availableTools(MODE.SIMPLE).includes('measure-tool'), '33p measure-tool appears in the Pro tool set only');
+
+// ---- 34) room measurements (floor area / perimeter / centroid) — the measure follow-up ----
+// Pure geometry derived from a room's polygon, surfaced read-only in the inspector when a
+// room floor is selected. Adds NO model fields — measurements are computed on demand, so the
+// Phase 1 lossless save round-trip is untouched (asserted below).
+_resetIds();
+// 34a-c) a 4x3 rectangle: area 12 m², perimeter 14 m, centre at the middle.
+const rectPts = [{ x: 0, z: 0 }, { x: 4, z: 0 }, { x: 4, z: 3 }, { x: 0, z: 3 }];
+ok(near(polygonArea(rectPts), 12), '34a polygonArea = shoelace floor area (4x3 = 12 m²)');
+ok(near(polygonPerimeter(rectPts), 14), '34b polygonPerimeter sums every edge incl. the closing one');
+const rc = polygonCentroid(rectPts);
+ok(near(rc.x, 2) && near(rc.z, 1.5), '34c polygonCentroid is the area-weighted centre');
+// 34d) winding-independent: reversing the point order gives the same (positive) area.
+ok(near(polygonArea([...rectPts].reverse()), 12), '34d area is winding-independent (abs shoelace)');
+// 34e) a right triangle (legs 6 and 8, hypotenuse 10): area 24, perimeter 24.
+const triPts = [{ x: 0, z: 0 }, { x: 6, z: 0 }, { x: 0, z: 8 }];
+ok(near(polygonArea(triPts), 24) && near(polygonPerimeter(triPts), 24), '34e triangle area + perimeter');
+// 34f) degenerate polygons never NaN/throw: <3 points → 0 area/perimeter, finite centroid.
+ok(polygonArea([{ x: 1, z: 1 }]) === 0 && polygonPerimeter([]) === 0, '34f degenerate polygon = 0 area/perimeter');
+const dc = polygonCentroid([{ x: 2, z: 4 }, { x: 4, z: 8 }]);
+ok(isFinite(dc.x) && isFinite(dc.z) && near(dc.x, 3) && near(dc.z, 6), '34g degenerate centroid falls back to vertex average (finite)');
+// 34h) collinear points (zero area) → centroid still finite (no divide-by-zero).
+const cc = polygonCentroid([{ x: 0, z: 0 }, { x: 2, z: 0 }, { x: 4, z: 0 }]);
+ok(isFinite(cc.x) && isFinite(cc.z), '34h collinear (zero-area) centroid is finite');
+// 34i-j) describeRoom carries SI + display labels, following the units toggle.
+const dr = describeRoom(createRoom(rectPts, { name: 'Kitchen' }), UNIT.METRIC);
+ok(dr.name === 'Kitchen' && near(dr.area, 12) && dr.areaLabel === formatArea(12, UNIT.METRIC) && dr.perimeterLabel === formatLength(14, UNIT.METRIC), '34i describeRoom = name + area/perimeter + metric labels');
+const drImp = describeRoom(createRoom(rectPts), UNIT.IMPERIAL);
+ok(drImp.areaLabel === formatArea(12, UNIT.IMPERIAL) && drImp.perimeterLabel === formatLength(14, UNIT.IMPERIAL), '34j describeRoom labels follow the imperial units toggle');
+ok(describeRoom(null) === null && describeRoom({ points: [{ x: 0, z: 0 }] }) === null, '34k describeRoom returns null for a room with no usable polygon');
+
+// 34l-p) the inspector surfaces a selected ROOM as a read-only measurement (the gap this fills:
+// before, selecting a room showed nothing). No command, no model mutation, lossless.
+_resetIds();
+const rmLevel = createLevel({ id: 'RL', name: 'G', height: 2.7, rooms: [createRoom(rectPts, { id: 'room-k', name: 'Kitchen' })] });
+const rmProj = createProject({ levels: [rmLevel] });
+const rmBefore = serialize(rmProj);
+ok(findRoom(rmLevel, 'room-k') && findRoom(rmLevel, 'nope') === null, '34l findRoom locates a room by id on its level');
+const roomDesc = describeSelection(rmProj, { kind: 'room', id: 'room-k' }, { mode: MODE.SIMPLE, units: UNIT.METRIC });
+ok(roomDesc && roomDesc.type === 'room' && roomDesc.title === 'Kitchen', '34m selecting a room describes it (was: null / "nothing")');
+ok(roomDesc.editable === false && roomDesc.measurement === true, '34n a room is a read-only measurement, not an editable seam (Simple OR Pro)');
+ok(roomDesc.fields.length === 2 && roomDesc.fields[0].key === 'area' && roomDesc.fields[1].key === 'perimeter', '34o room fields are floor area + perimeter');
+// even in Pro, a room stays a read-only measurement (no exact-entry — there is nothing to type).
+const roomDescPro = describeSelection(rmProj, { kind: 'room', id: 'room-k' }, { mode: MODE.PRO, units: UNIT.METRIC });
+ok(roomDescPro.editable === false && roomDescPro.measurement === true, '34p a room is read-only in Pro too (Simple/Pro seam does not apply)');
+ok(serialize(rmProj) === rmBefore, '34q describing a room mutates NOTHING — the save round-trip is byte-identical');
+ok(describeSelection(rmProj, { kind: 'room', id: 'ghost' }) === null, '34r a room id that does not exist yields no descriptor');
 
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'} — ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
