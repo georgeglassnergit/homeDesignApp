@@ -160,6 +160,9 @@ export function findWall(level, wallId) {
 export function findOpening(level, openingId) {
   return level ? level.openings.find(o => o.id === openingId) || null : null;
 }
+export function findRoom(level, roomId) {
+  return level ? level.rooms.find(r => r.id === roomId) || null : null;
+}
 
 // ---- validation ------------------------------------------------------------
 

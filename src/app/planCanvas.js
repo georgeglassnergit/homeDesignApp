@@ -5,6 +5,7 @@
 import { wallLength } from '../core/model.js';
 import { measureDistance } from '../edit/measure.js';
 import { formatLength } from '../core/units.js';
+import { describeRoom } from '../core/roomMeasure.js';
 
 export function createPlanCanvas(canvas, { project, controller, planView, state, levelId, onSelect }) {
   const ctx = canvas.getContext('2d');
@@ -47,9 +48,45 @@ export function createPlanCanvas(canvas, { project, controller, planView, state,
     ctx.fillStyle = '#efe9df'; ctx.fillRect(0, 0, w, h);
     drawGrid(w, h);
     const lv = level();
-    if (lv) { drawWalls(lv); drawOpenings(lv); drawVertices(lv); }
+    if (lv) { drawRooms(lv); drawWalls(lv); drawOpenings(lv); drawVertices(lv); }
     drawPreview();
     drawMeasure();
+  }
+
+  // Room floors as subtle plan fills, each labelled with its computed floor area at the
+  // room centroid (following the display units). The selected room reads warmer. This is
+  // pure view: it reads the model's room polygons and derives measurements on the fly
+  // (core/roomMeasure.js) — it stores no geometry and mutates no model. Drawn UNDER the
+  // walls so wall centerlines stay crisp on top of the fill.
+  function drawRooms(lv) {
+    const sel = state.selection;
+    for (const room of lv.rooms || []) {
+      if (!room.points || room.points.length < 3) continue;
+      const selected = sel && sel.kind === 'room' && sel.id === room.id;
+      ctx.beginPath();
+      room.points.forEach((pt, i) => {
+        const s = planView.worldToScreen(pt);
+        i === 0 ? ctx.moveTo(s.px, s.py) : ctx.lineTo(s.px, s.py);
+      });
+      ctx.closePath();
+      ctx.fillStyle = selected ? 'rgba(197,106,44,.18)' : 'rgba(140,114,86,.10)';
+      ctx.fill();
+      if (selected) {
+        ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(197,106,44,.55)'; ctx.stroke();
+      }
+      // area label chip at the centroid
+      const info = describeRoom(room, state.units);
+      if (!info) continue;
+      const c = planView.worldToScreen(info.centroid);
+      ctx.font = '600 11px system-ui, sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      const label = info.areaLabel;
+      const tw = ctx.measureText(label).width, pad = 4;
+      ctx.fillStyle = 'rgba(255,255,255,.82)';
+      ctx.fillRect(c.px - tw / 2 - pad, c.py - 8, tw + pad * 2, 16);
+      ctx.fillStyle = selected ? '#7a3d12' : '#6b5946';
+      ctx.fillText(label, c.px, c.py);
+    }
   }
 
   function drawGrid(w, h) {
