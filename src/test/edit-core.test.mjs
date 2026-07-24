@@ -6,10 +6,11 @@
 // src/core/model.js: createWall/createOpening (near-edge offset), deterministic ids,
 // and the Phase 1 lossless save round-trip surviving every edit.
 import {
-  createProject, createLevel, createWall, createOpening, createRoof, validateProject,
-  serialize, deserialize, wallLength, findLevel, findWall, findOpening, stackElevations, _resetIds,
+  createProject, createLevel, createWall, createOpening, createRoof, createRoom, validateProject,
+  serialize, deserialize, wallLength, findLevel, findWall, findOpening, findRoom,
+  polygonArea, polygonPerimeter, stackElevations, _resetIds,
 } from '../core/model.js';
-import { parseLength, formatLength, UNIT } from '../core/units.js';
+import { parseLength, formatLength, formatArea, UNIT } from '../core/units.js';
 import { isAvailable, availableTools, createAppState, MODE, TOOL, VIEW } from '../app/state.js';
 import { addWall, moveWallVertex, removeWall, addOpening, removeOpening, loadTemplate, composite, setView, resizeWall, resizeOpening, addLevel, removeLevel, renameLevel, setLevelHeight, setLevelRoof, setRoofType } from '../edit/commands.js';
 // Pure roof-shape math (gable/hip) — must stay three-free (importing under Node is the guard).
@@ -810,6 +811,47 @@ ok(mprev && mprev.complete === false && near(measureDistance(mprev.from, mprev.t
 // 33o) the measure tool is a Pro-seam feature (dormant in Simple).
 ok(!isAvailable('measure-tool', MODE.SIMPLE) && isAvailable('measure-tool', MODE.PRO), '33o measure-tool is Pro-only');
 ok(availableTools(MODE.PRO).includes('measure-tool') && !availableTools(MODE.SIMPLE).includes('measure-tool'), '33p measure-tool appears in the Pro tool set only');
+
+// ---- 34) room floor-area + perimeter readout — pure polygon math + the room inspector -----
+// 34a-f) polygonArea / polygonPerimeter: pure shoelace math, winding-independent, degenerate-safe.
+const unitSq = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 1, z: 1 }, { x: 0, z: 1 }];
+ok(near(polygonArea(unitSq), 1) && near(polygonPerimeter(unitSq), 4), '34a unit square = 1 m² area, 4 m perimeter');
+const rect = [{ x: -4, z: -3 }, { x: 0, z: -3 }, { x: 0, z: 3 }, { x: -4, z: 3 }]; // 4 x 6
+ok(near(polygonArea(rect), 24) && near(polygonPerimeter(rect), 20), '34b 4x6 rectangle = 24 m² area, 20 m perimeter');
+const rectCW = [...rect].reverse(); // opposite winding
+ok(near(polygonArea(rectCW), 24), '34c area is winding-independent (CW gives the same positive area)');
+const tri = [{ x: 0, z: 0 }, { x: 4, z: 0 }, { x: 0, z: 3 }];
+ok(near(polygonArea(tri), 6) && near(polygonPerimeter(tri), 12), '34d right triangle 4x3 = 6 m² area, 12 m perimeter');
+ok(polygonArea([{ x: 0, z: 0 }, { x: 1, z: 1 }]) === 0 && polygonArea(null) === 0, '34e degenerate polygon (< 3 pts / null) = 0 area');
+ok(polygonPerimeter([{ x: 0, z: 0 }, { x: 1, z: 1 }]) === 0, '34f degenerate polygon = 0 perimeter');
+
+// 34g-m) the room inspector descriptor: a read-only floor-area + perimeter readout.
+const rmProj = createProject({ levels: [createLevel({ id: 'RM', name: 'G', height: 2.7,
+  walls: [createWall({ x: -4, z: -3 }, { x: 4, z: -3 }, { id: 'rw' })],
+  rooms: [createRoom([{ x: -4, z: -3 }, { x: 4, z: -3 }, { x: 4, z: 3 }, { x: -4, z: 3 }], { id: 'living', name: 'Living' })],
+})] });
+ok(findRoom(findLevel(rmProj, 'RM'), 'living').name === 'Living', '34g findRoom locates a room on its level');
+const rmDesc = describeSelection(rmProj, { kind: 'room', id: 'living' }, { mode: MODE.SIMPLE, units: UNIT.METRIC });
+ok(rmDesc && rmDesc.type === 'room' && rmDesc.title === 'Living', '34h a selected room describes as a room titled by its name');
+ok(rmDesc.editable === false, '34i the room readout is read-only (never an input)');
+const areaField = rmDesc.fields.find(f => f.key === 'area'), periField = rmDesc.fields.find(f => f.key === 'perimeter');
+ok(areaField && near(areaField.sqm, 48) && areaField.text === formatArea(48, UNIT.METRIC), '34j floor-area field = 8x6 = 48 m², formatted metric');
+ok(periField && near(periField.meters, 28) && periField.text === formatLength(28, UNIT.METRIC), '34k perimeter field = 28 m, formatted metric');
+// stays read-only AND re-formats in Pro + imperial (a measurement, not a Pro-gated editor)
+const rmPro = describeSelection(rmProj, { kind: 'room', id: 'living' }, { mode: MODE.PRO, units: UNIT.IMPERIAL });
+ok(rmPro.editable === false, '34l the room readout stays read-only in Pro (unlike wall/opening dims)');
+ok(rmPro.fields.find(f => f.key === 'area').text === formatArea(48, UNIT.IMPERIAL), '34m the room readout follows the imperial units toggle');
+// the room readout carries NO command and CANNOT mutate the model (it is pure view state)
+ok(buildDimensionEdit(rmProj, { kind: 'room', id: 'living' }, 'area', '20', { units: UNIT.METRIC }).command === undefined, '34n a room has no editable dimension command (readout only)');
+// a walls-and-openings selection is unaffected; an unknown room id still yields null
+ok(describeSelection(rmProj, { kind: 'room', id: 'nope' }) === null, '34o an unknown room id selects nothing');
+const shProj = sampleHome();
+const shDesc = describeSelection(shProj, { kind: 'room', id: shProj.levels[0].rooms[0].id }, { units: UNIT.METRIC });
+ok(shDesc !== null && near(shDesc.fields.find(f => f.key === 'area').sqm, 24), '34p sampleHome rooms describe (the two-room starter is selectable, Living = 24 m²)');
+// the readout NEVER touches the save contract (no command issued means the project is byte-identical)
+const rmBefore = serialize(rmProj);
+describeSelection(rmProj, { kind: 'room', id: 'living' }, { mode: MODE.PRO, units: UNIT.METRIC });
+ok(serialize(rmProj) === rmBefore, '34q describing a room mutates nothing — the lossless save is untouched');
 
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'} — ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
