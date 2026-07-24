@@ -6,9 +6,9 @@
 // parse feet-and-inches / metric via units.js. main.js renders this descriptor to DOM and
 // dispatches the edit through history; the Node test suite asserts on the descriptor + command
 // directly. ZERO Three.js and ZERO DOM in here (importing under Node is the separation guard).
-import { findWall, findOpening, wallLength } from '../core/model.js';
+import { findWall, findOpening, findRoom, wallLength, polygonArea, polygonPerimeter } from '../core/model.js';
 import { isAvailable, MODE } from './state.js';
-import { formatLength, parseLength, UNIT } from '../core/units.js';
+import { formatLength, formatArea, parseLength, UNIT } from '../core/units.js';
 import { resizeWall, resizeOpening } from '../edit/commands.js';
 
 // Locate the level + object a selection {kind,id} refers to, scanning every level so the
@@ -19,6 +19,9 @@ function locate(project, selection) {
     if (selection.kind === 'wall') {
       const w = findWall(lvl, selection.id);
       if (w) return { level: lvl, kind: 'wall', wall: w };
+    } else if (selection.kind === 'room') {
+      const r = findRoom(lvl, selection.id);
+      if (r) return { level: lvl, kind: 'room', room: r };
     } else {
       const o = findOpening(lvl, selection.id);
       if (o) return { level: lvl, kind: 'opening', opening: o };
@@ -35,11 +38,29 @@ export const POSITIVE_FIELDS = Object.freeze(new Set(['length', 'thickness', 'he
 export const NONNEG_FIELDS = Object.freeze(new Set(['sill', 'offset']));
 
 // Describe the current selection's editable dimensions.
-// Returns null when nothing editable is selected (empty selection, or a room/floor — room
-// editing is a later phase). `editable` reflects the Simple/Pro seam via isAvailable().
+// Returns null when nothing is selected (empty selection or an object with no readout).
+// Walls/openings carry editable dimensions gated by the Simple/Pro seam (isAvailable).
+// A selected room returns a READ-ONLY floor-area + perimeter readout — a novice-friendly
+// measurement (available in both tiers, computed from the room polygon, never an input),
+// so it carries no command and can never touch the Phase 1 save contract.
 export function describeSelection(project, selection, { mode = MODE.SIMPLE, units = UNIT.METRIC } = {}) {
   const loc = locate(project, selection);
   if (!loc) return null;
+  if (loc.kind === 'room') {
+    const area = polygonArea(loc.room.points);
+    const perimeter = polygonPerimeter(loc.room.points);
+    return {
+      title: loc.room.name || 'Room',
+      type: 'room',
+      id: selection.id,
+      editable: false,           // a measurement readout, not an input, in Simple AND Pro
+      hint: 'Floor area updates automatically as you edit the room',
+      fields: [
+        { key: 'area',      label: 'Floor area', sqm: round(area),        text: formatArea(area, units) },
+        { key: 'perimeter', label: 'Perimeter',  meters: round(perimeter), text: formatLength(perimeter, units) },
+      ],
+    };
+  }
   const editable = isAvailable('exact-dimensions', mode);
   let title, fields;
   if (loc.kind === 'wall') {
@@ -71,6 +92,9 @@ export function describeSelection(project, selection, { mode = MODE.SIMPLE, unit
 export function buildDimensionEdit(project, selection, key, rawValue, { units = UNIT.METRIC } = {}) {
   const loc = locate(project, selection);
   if (!loc) return { error: 'Nothing selected' };
+  // A room is a read-only measurement readout — its area/perimeter are computed, never typed,
+  // so there is no dimension command to build (guards against a bogus edit to a room selection).
+  if (loc.kind === 'room') return { error: 'Room measurements are read-only' };
   const meters = parseLength(rawValue, units);
   if (!isFinite(meters)) return { error: `Couldn't read "${rawValue}"` };
   if (POSITIVE_FIELDS.has(key) && !(meters > 0)) return { error: `${key} must be greater than 0` };

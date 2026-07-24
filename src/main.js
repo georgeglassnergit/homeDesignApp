@@ -130,7 +130,7 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       const desc = describeSelection(project, app.selection, { mode: app.mode, units: app.units });
       if (!desc) {
         insBox.className = '';
-        insBox.innerHTML = '<div class="ins-empty">No selection — click a wall or opening</div>';
+        insBox.innerHTML = '<div class="ins-empty">No selection — click a wall, opening or room</div>';
         return;
       }
       const rows = desc.fields.map((f) => desc.editable
@@ -139,7 +139,7 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
         : `<div class="ins-row"><span>${f.label}</span><b>${f.text}</b></div>`).join('');
       const foot = desc.editable
         ? `<div class="ins-hint">Type an exact size (e.g. 3.2m or 10'6") and press Enter</div>`
-        : '<div class="ins-hint">Switch to <b>Pro</b> to edit exact dimensions</div>';
+        : `<div class="ins-hint">${desc.hint || 'Switch to <b>Pro</b> to edit exact dimensions'}</div>`;
       insBox.className = desc.editable ? 'editable' : '';
       insBox.innerHTML = `<div class="ins-title">${desc.title}</div>${rows}${foot}<div class="ins-msg" id="ins-msg"></div>`;
       if (desc.editable) {

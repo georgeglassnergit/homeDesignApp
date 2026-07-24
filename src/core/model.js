@@ -130,6 +130,31 @@ export function wallLength(wall) {
   return Math.hypot(wall.b.x - wall.a.x, wall.b.z - wall.a.z);
 }
 
+// Absolute floor area (m²) of a plan polygon of {x,z} points via the shoelace formula.
+// Winding-independent (CW or CCW both give a positive area) and returns 0 for a degenerate
+// polygon (< 3 points), so a room readout never shows a negative or NaN area. Pure geometry.
+export function polygonArea(points) {
+  if (!Array.isArray(points) || points.length < 3) return 0;
+  let sum = 0;
+  for (let i = 0, n = points.length; i < n; i++) {
+    const p = points[i], q = points[(i + 1) % n];
+    sum += p.x * q.z - q.x * p.z;
+  }
+  return Math.abs(sum) / 2;
+}
+
+// Perimeter (m) of a closed plan polygon of {x,z} points (the last point joins back to the
+// first). 0 for a degenerate polygon (< 3 points). Pure geometry — companion to polygonArea.
+export function polygonPerimeter(points) {
+  if (!Array.isArray(points) || points.length < 3) return 0;
+  let per = 0;
+  for (let i = 0, n = points.length; i < n; i++) {
+    const p = points[i], q = points[(i + 1) % n];
+    per += Math.hypot(q.x - p.x, q.z - p.z);
+  }
+  return per;
+}
+
 // Recompute each level's floor elevation so storeys stack contiguously from the ground up
 // (index 0 = ground floor at elevation 0). Every level sits on the roof of the one beneath.
 // Pure data mutation — the multi-level edit commands call this to keep storeys stacked with
@@ -159,6 +184,9 @@ export function findWall(level, wallId) {
 }
 export function findOpening(level, openingId) {
   return level ? level.openings.find(o => o.id === openingId) || null : null;
+}
+export function findRoom(level, roomId) {
+  return level ? level.rooms.find(r => r.id === roomId) || null : null;
 }
 
 // ---- validation ------------------------------------------------------------
