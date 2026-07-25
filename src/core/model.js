@@ -155,6 +155,30 @@ export function polygonPerimeter(points) {
   return per;
 }
 
+// Centroid {x,z} of a plan polygon — the point where a room's area label sits so it reads
+// inside the shape. Area-weighted for a valid polygon; falls back to the vertex average for a
+// degenerate/collinear one (< 3 points or zero area) so a label never lands at NaN/∞. Pure
+// geometry — companion to polygonArea/polygonPerimeter.
+export function polygonCentroid(points) {
+  if (!Array.isArray(points) || points.length === 0) return { x: 0, z: 0 };
+  const n = points.length;
+  const avg = () => ({
+    x: points.reduce((s, p) => s + p.x, 0) / n,
+    z: points.reduce((s, p) => s + p.z, 0) / n,
+  });
+  if (n < 3) return avg();
+  let a2 = 0, cx = 0, cz = 0;
+  for (let i = 0; i < n; i++) {
+    const p = points[i], q = points[(i + 1) % n];
+    const cross = p.x * q.z - q.x * p.z;
+    a2 += cross;
+    cx += (p.x + q.x) * cross;
+    cz += (p.z + q.z) * cross;
+  }
+  if (Math.abs(a2) < 1e-9) return avg();     // collinear / zero-area — no divide-by-zero
+  return { x: cx / (3 * a2), z: cz / (3 * a2) };
+}
+
 // Recompute each level's floor elevation so storeys stack contiguously from the ground up
 // (index 0 = ground floor at elevation 0). Every level sits on the roof of the one beneath.
 // Pure data mutation — the multi-level edit commands call this to keep storeys stacked with
