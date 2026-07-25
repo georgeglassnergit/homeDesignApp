@@ -8,7 +8,7 @@
 import {
   createProject, createLevel, createWall, createOpening, createRoof, createRoom, validateProject,
   serialize, deserialize, wallLength, findLevel, findWall, findOpening, findRoom,
-  polygonArea, polygonPerimeter, stackElevations, _resetIds,
+  polygonArea, polygonPerimeter, polygonCentroid, stackElevations, _resetIds,
 } from '../core/model.js';
 import { parseLength, formatLength, formatArea, UNIT } from '../core/units.js';
 import { isAvailable, availableTools, createAppState, MODE, TOOL, VIEW } from '../app/state.js';
@@ -852,6 +852,32 @@ ok(shDesc !== null && near(shDesc.fields.find(f => f.key === 'area').sqm, 24), '
 const rmBefore = serialize(rmProj);
 describeSelection(rmProj, { kind: 'room', id: 'living' }, { mode: MODE.PRO, units: UNIT.METRIC });
 ok(serialize(rmProj) === rmBefore, '34q describing a room mutates nothing — the lossless save is untouched');
+
+// ---- 35) polygonCentroid — label placement for the plan-canvas room area overlay ----------
+// Pure geometry used by planCanvas.drawRooms() to position each room's area label. Area-weighted
+// for a valid polygon, degenerate-safe (never NaN/∞) for < 3 points or a zero-area polygon.
+_resetIds();
+const sqC = [{ x: 0, z: 0 }, { x: 4, z: 0 }, { x: 4, z: 4 }, { x: 0, z: 4 }];
+const cc = polygonCentroid(sqC);
+ok(near(cc.x, 2) && near(cc.z, 2), '35a centroid of a 4x4 square is its centre (2,2)');
+// an L-shape: the area-weighted centroid must land INSIDE the L, not at the bounding-box centre.
+const lShape = [{ x: 0, z: 0 }, { x: 4, z: 0 }, { x: 4, z: 2 }, { x: 2, z: 2 }, { x: 2, z: 4 }, { x: 0, z: 4 }];
+const lc = polygonCentroid(lShape);
+ok(isFinite(lc.x) && isFinite(lc.z) && lc.x < 2 && lc.z < 2, '35b L-shape centroid is area-weighted (pulled toward the bulk, not the bbox centre)');
+// winding-independent: reversing the points gives the same centroid.
+const ccRev = polygonCentroid([...sqC].reverse());
+ok(near(ccRev.x, 2) && near(ccRev.z, 2), '35c centroid is winding-independent');
+// degenerate-safe: < 3 points → vertex average (finite), empty → origin, collinear → finite.
+const dc = polygonCentroid([{ x: 2, z: 6 }, { x: 4, z: 10 }]);
+ok(near(dc.x, 3) && near(dc.z, 8), '35d < 3 points falls back to the vertex average (finite)');
+ok(polygonCentroid([]).x === 0 && polygonCentroid([]).z === 0, '35e empty polygon centroid is the origin (no NaN)');
+const coll = polygonCentroid([{ x: 0, z: 0 }, { x: 2, z: 0 }, { x: 4, z: 0 }]);
+ok(isFinite(coll.x) && isFinite(coll.z), '35f collinear (zero-area) centroid is finite (no divide-by-zero)');
+// the real sampleHome rooms produce finite centroids inside their bounds (label never lands off-plan).
+const shRoom = sampleHome().levels[0].rooms[0];
+const shc = polygonCentroid(shRoom.points);
+const xs = shRoom.points.map(p => p.x), zs = shRoom.points.map(p => p.z);
+ok(shc.x >= Math.min(...xs) && shc.x <= Math.max(...xs) && shc.z >= Math.min(...zs) && shc.z <= Math.max(...zs), '35g sampleHome room centroid lies within the room bounds');
 
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'} — ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
