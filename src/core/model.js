@@ -174,6 +174,32 @@ export function projectCounts(project) {
   return { levels: project.levels.length, walls, openings, rooms, furniture: project.furniture.length };
 }
 
+// Gross floor area (m²) of one storey = the sum of its room-polygon areas. Pure geometry
+// (delegates to polygonArea, so it inherits the winding-independent / degenerate-safe → 0
+// behaviour). A storey with no rooms measures 0, never NaN.
+export function levelFloorArea(level) {
+  if (!level || !Array.isArray(level.rooms)) return 0;
+  let sum = 0;
+  for (const r of level.rooms) sum += polygonArea(r.points);
+  return sum;
+}
+
+// Whole-home floor-area summary: the total gross floor area across every storey, plus a
+// per-storey breakdown (id / name / area / room count). Pure read over the model — computes
+// on demand, stores nothing, issues no command, so it can never touch the Phase 1 save
+// contract. Novice-first: a homeowner's "how big is my house?" answered from the data.
+export function projectFloorArea(project) {
+  const byLevel = (project && Array.isArray(project.levels) ? project.levels : []).map(lvl => ({
+    id: lvl.id,
+    name: lvl.name || 'Level',
+    area: levelFloorArea(lvl),
+    rooms: Array.isArray(lvl.rooms) ? lvl.rooms.length : 0,
+  }));
+  const total = byLevel.reduce((s, l) => s + l.area, 0);
+  const rooms = byLevel.reduce((s, l) => s + l.rooms, 0);
+  return { total, rooms, levels: byLevel.length, byLevel };
+}
+
 // ---- lookups (used by the edit/command layer; still pure data) --------------
 
 export function findLevel(project, levelId) {
