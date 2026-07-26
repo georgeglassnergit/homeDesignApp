@@ -63,7 +63,8 @@ export function buildRoofMesh(level, material) {
     if (!fp) return null;
     const baseY = level.elevation + level.height;
     const pitch = level.roof.pitch ?? DEFAULT_ROOF_PITCH;
-    const { positions } = roofSolid(type, fp, { baseY, pitch });
+    const ridge = level.roof.ridge ?? 'auto';
+    const { positions } = roofSolid(type, fp, { baseY, pitch, ridge });
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
     geo.computeVertexNormals();
