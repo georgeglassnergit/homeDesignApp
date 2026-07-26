@@ -224,10 +224,10 @@ export function setLevelRoof(levelId, roof) {
 
 // Change a storey roof's shape (flat / gable / hip) and/or pitch. The prior roof
 // is captured whole for a byte-lossless undo (the Phase 1 guarantee). Only the
-// roof's `type`/`pitch` fields change — thickness, overhang and material carry
+// roof's `type`/`pitch`/`ridge` fields change — thickness, overhang and material carry
 // through untouched. Missing pitch is backfilled to the default so a roof that
 // pre-dates the pitch field renders a sane slope once switched to gable/hip.
-export function setRoofType(levelId, { type, pitch } = {}) {
+export function setRoofType(levelId, { type, pitch, ridge } = {}) {
   let prev;
   return {
     name: 'Set roof type',
@@ -238,6 +238,7 @@ export function setRoofType(levelId, { type, pitch } = {}) {
       prev = { ...l.roof };
       if (type !== undefined) l.roof.type = type;
       if (pitch !== undefined) l.roof.pitch = pitch;
+      if (ridge !== undefined) l.roof.ridge = ridge;
       if (l.roof.pitch === undefined) l.roof.pitch = DEFAULT_ROOF_PITCH;
     },
     undo(project) {
