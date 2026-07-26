@@ -5,7 +5,7 @@
 // Model/view separation: this file knows nothing about rendering.
 // ============================================================================
 
-import { ROOF_TYPES, isPitched } from './roofShape.js';
+import { ROOF_TYPES, RIDGE_MODES, isPitched } from './roofShape.js';
 
 export const SCHEMA_VERSION = 1;
 
@@ -15,7 +15,7 @@ export const DEFAULTS = Object.freeze({
   wall:   { thickness: 0.12, height: 2.7 },          // 12 cm wall, 2.7 m ceiling
   door:   { width: 0.9,  height: 2.1, sill: 0.0 },    // standard interior door
   window: { width: 1.4,  height: 1.2, sill: 0.9 },    // sill 0.9 m off the floor
-  roof:   { type: 'flat', thickness: 0.15, overhang: 0.3, pitch: 30 }, // pitch (deg) used by gable/hip
+  roof:   { type: 'flat', thickness: 0.15, overhang: 0.3, pitch: 30, ridge: 'auto' }, // pitch (deg) + ridge ('auto'|'x'|'z') used by gable/hip
   level:  { height: 2.7 },
 });
 
@@ -98,6 +98,7 @@ export function createRoof(opts = {}) {
     thickness: opts.thickness ?? DEFAULTS.roof.thickness,
     overhang: opts.overhang ?? DEFAULTS.roof.overhang,
     pitch: opts.pitch ?? DEFAULTS.roof.pitch,  // slope in degrees; only affects gable/hip
+    ridge: opts.ridge || DEFAULTS.roof.ridge,  // 'auto'|'x'|'z' ridge orientation; only affects gable/hip
     material: opts.material || 'roof',
   };
 }
@@ -267,6 +268,7 @@ export function validateProject(project) {
     if (lvl.roof) {
       if (!ROOF_TYPES.includes(lvl.roof.type)) errors.push(`level ${lvl.id}: unknown roof type ${lvl.roof.type}`);
       if (isPitched(lvl.roof.type) && !(lvl.roof.pitch > 0 && lvl.roof.pitch < 90)) errors.push(`level ${lvl.id}: roof pitch must be between 0 and 90 degrees`);
+      if (lvl.roof.ridge != null && !RIDGE_MODES.includes(lvl.roof.ridge)) errors.push(`level ${lvl.id}: unknown roof ridge ${lvl.roof.ridge}`);
     }
   }
   return { ok: errors.length === 0, errors };

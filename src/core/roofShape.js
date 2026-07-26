@@ -12,8 +12,27 @@
 export const ROOF_TYPES = ['flat', 'gable', 'hip'];
 export const DEFAULT_ROOF_PITCH = 30; // degrees from horizontal
 
+// Which plan axis the ridge line runs along. 'auto' picks the longer axis (the
+// conventional default); 'x'/'z' let the designer force it the other way — useful
+// on a near-square footprint where "longer axis" is ambiguous, or purely for looks.
+export const RIDGE_MODES = ['auto', 'x', 'z'];
+export const DEFAULT_RIDGE = 'auto';
+
 export function isPitched(type) {
   return type === 'gable' || type === 'hip';
+}
+
+// Resolve a ridge mode to a concrete orientation for the given footprint.
+// Returns true when the ridge runs along X, false when it runs along Z.
+//   'auto' → the longer plan axis (W >= D) — the previous hardwired behaviour
+//   'x'    → force the ridge along X
+//   'z'    → force the ridge along Z
+// Any unknown value falls back to 'auto', so an old/garbled field never throws.
+export function resolveRidgeAlongX(footprint, ridge = DEFAULT_RIDGE) {
+  if (ridge === 'x') return true;
+  if (ridge === 'z') return false;
+  const W = footprint.x1 - footprint.x0, D = footprint.z1 - footprint.z0;
+  return W >= D;
 }
 
 // Axis-aligned footprint of a level's walls, expanded by the roof overhang.
@@ -73,14 +92,16 @@ function finalize(raw, center) {
 // footprint. `type` must be 'gable' or 'hip'. Options:
 //   baseY  — eave height (top of the walls), in metres
 //   pitch  — roof slope in degrees (0<pitch<90)
+//   ridge  — 'auto' (longer axis) | 'x' | 'z' (force the ridge orientation)
 // Returns { positions (9 numbers/triangle, non-indexed, outward-facing),
-//           triangleCount, ridgeY, apex|null }. apex is set only when a hip
-// degenerates to a pyramid (square footprint).
-export function roofSolid(type, footprint, { baseY = 0, pitch = DEFAULT_ROOF_PITCH } = {}) {
+//           triangleCount, ridgeY, ridgeAlongX, apex|null }. apex is set only
+// when a hip degenerates to a pyramid (square footprint).
+export function roofSolid(type, footprint, { baseY = 0, pitch = DEFAULT_ROOF_PITCH, ridge = DEFAULT_RIDGE } = {}) {
   const { x0, x1, z0, z1 } = footprint;
   const W = x1 - x0, D = z1 - z0;
-  const ridgeAlongX = W >= D;          // ridge runs along the longer plan axis
-  const shortHalf = Math.min(W, D) / 2;
+  const ridgeAlongX = resolveRidgeAlongX(footprint, ridge); // 'auto' = longer axis
+  // The run each slope covers is half the footprint span PERPENDICULAR to the ridge.
+  const shortHalf = (ridgeAlongX ? D : W) / 2;
   const rise = pitchRise(shortHalf, pitch);
   const h0 = baseY, hR = baseY + rise;
   const center = [(x0 + x1) / 2, (h0 + hR) / 2, (z0 + z1) / 2];
@@ -107,9 +128,13 @@ export function roofSolid(type, footprint, { baseY = 0, pitch = DEFAULT_ROOF_PIT
       tri(raw, c01, c11, R1);            // gable end at z1
     }
   } else if (type === 'hip') {
+    // Inset the ridge from each end by the hip run — but never past the midpoint,
+    // else a ridge forced along the shorter axis would cross itself. Clamped to the
+    // ridge-axis half-length, so it collapses to a pyramid apex instead of inverting.
     if (ridgeAlongX) {
       const zc = (z0 + z1) / 2;
-      const rx0 = x0 + shortHalf, rx1 = x1 - shortHalf;
+      const inset = Math.min(shortHalf, W / 2);
+      const rx0 = x0 + inset, rx1 = x1 - inset;
       const R0 = [rx0, hR, zc], R1 = [rx1, hR, zc];
       if (rx1 - rx0 < 1e-6) apex = [(rx0 + rx1) / 2, hR, zc];
       quad(raw, c00, c10, R1, R0);       // -Z trapezoid slope
@@ -118,7 +143,8 @@ export function roofSolid(type, footprint, { baseY = 0, pitch = DEFAULT_ROOF_PIT
       tri(raw, c10, c11, R1);            // hip end at x1
     } else {
       const xc = (x0 + x1) / 2;
-      const rz0 = z0 + shortHalf, rz1 = z1 - shortHalf;
+      const inset = Math.min(shortHalf, D / 2);
+      const rz0 = z0 + inset, rz1 = z1 - inset;
       const R0 = [xc, hR, rz0], R1 = [xc, hR, rz1];
       if (rz1 - rz0 < 1e-6) apex = [xc, hR, (rz0 + rz1) / 2];
       quad(raw, c10, c11, R1, R0);       // +X trapezoid slope
@@ -133,5 +159,5 @@ export function roofSolid(type, footprint, { baseY = 0, pitch = DEFAULT_ROOF_PIT
   // flat bottom cap at eave height closes the shell (an attic floor).
   quad(raw, c00, c10, c11, c01);
 
-  return { ...finalize(raw, center), ridgeY: hR, apex };
+  return { ...finalize(raw, center), ridgeY: hR, ridgeAlongX, apex };
 }

@@ -363,6 +363,8 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
     const roofGroup = $('roof-group'), roofBtn = $('roof-btn'), roofPanel = $('roof-panel');
     const roofPitchInp = $('roof-pitch'), roofPitchVal = $('roof-pitch-val');
     const roofTypeButtons = [...document.querySelectorAll('#roof-types button')];
+    const roofRidgeRow = $('roof-ridge-row');
+    const roofRidgeButtons = [...document.querySelectorAll('#roof-ridges button')];
 
     // The roof caps the TOP storey (multi-level moves it up as storeys stack).
     function roofBearingLevel() {
@@ -383,14 +385,19 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       const type = (roof && roof.type) || 'flat';
       const pitched = type === 'gable' || type === 'hip';
       const pitch = (roof && roof.pitch != null) ? roof.pitch : 30;
+      const ridge = (roof && roof.ridge) || 'auto';
       roofTypeButtons.forEach((b) => b.classList.toggle('active', b.dataset.roof === type));
       if (roofPitchInp) { roofPitchInp.value = pitch; roofPitchInp.disabled = !pitched; }
       if (roofPitchVal) roofPitchVal.textContent = pitched ? `${pitch}°` : '—';
+      // Ridge direction only means something for a pitched roof — show/enable it only then.
+      if (roofRidgeRow) roofRidgeRow.classList.toggle('hidden', !pitched);
+      roofRidgeButtons.forEach((b) => { b.classList.toggle('active', b.dataset.ridge === ridge); b.disabled = !pitched; });
       roofBtn.classList.toggle('armed', pitched);
       roofBtn.disabled = !roof;
     }
 
     roofTypeButtons.forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); applyRoof({ type: b.dataset.roof }); }));
+    roofRidgeButtons.forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); applyRoof({ ridge: b.dataset.ridge }); }));
     if (roofPitchInp) {
       roofPitchInp.addEventListener('keydown', (e) => e.stopPropagation());
       roofPitchInp.addEventListener('input', () => { if (roofPitchVal) roofPitchVal.textContent = `${roofPitchInp.value}°`; });
@@ -634,8 +641,8 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       __setLevelHeight: (id, h) => { commitLevelHeight(id, String(h)); return project.levels.find((l) => l.id === id)?.height; },
       __renameLevel: (id, name) => { commitLevelName(id, name); return project.levels.find((l) => l.id === id)?.name; },
       // roof-editor (gable/hip) seam handles — deterministic driving from the headless harness
-      __roof: () => { const r = (roofBearingLevel() || {}).roof; return r ? { levelId: roofBearingLevel().id, type: r.type, pitch: r.pitch } : null; },
-      __setRoofType: (patch) => { applyRoof(patch); const r = (roofBearingLevel() || {}).roof; return r ? { type: r.type, pitch: r.pitch } : null; },
+      __roof: () => { const r = (roofBearingLevel() || {}).roof; return r ? { levelId: roofBearingLevel().id, type: r.type, pitch: r.pitch, ridge: r.ridge } : null; },
+      __setRoofType: (patch) => { applyRoof(patch); const r = (roofBearingLevel() || {}).roof; return r ? { type: r.type, pitch: r.pitch, ridge: r.ridge } : null; },
       __roofSeamVisible: () => roofGroup.classList.contains('on'),
       // measure-tool (Pro-seam ruler) handles — deterministic driving from the headless harness
       __setTool: (t) => { controller.setTool(t); syncToolButtons(); hint(HINTS[app.activeTool] || ''); plan.draw(); return app.activeTool; },

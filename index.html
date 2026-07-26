@@ -196,6 +196,14 @@
         border: 1px solid #c3ab97; border-radius: 7px; background: #fff; color: #2b2622;
       }
       #roof-panel .rp-types button.active { background: #6b5b4b; color: #fff; border-color: #6b5b4b; }
+      #roof-panel .rp-ridge { display: flex; gap: 5px; flex: 1; }
+      #roof-panel .rp-ridge button {
+        flex: 1; font: inherit; padding: 5px 4px; cursor: pointer;
+        border: 1px solid #c3ab97; border-radius: 7px; background: #fff; color: #2b2622;
+      }
+      #roof-panel .rp-ridge button.active { background: #6b5b4b; color: #fff; border-color: #6b5b4b; }
+      #roof-panel .rp-ridge button:disabled { opacity: .4; cursor: default; }
+      #roof-ridge-row.hidden { display: none; }
       #roof-panel .rp-row { display: flex; align-items: center; gap: 8px; margin: 7px 0; }
       #roof-panel .rp-row label { flex: 0 0 auto; }
       #roof-panel input[type=range] { flex: 1; accent-color: #6b5b4b; cursor: pointer; }
@@ -309,7 +317,15 @@
         <input id="roof-pitch" type="range" min="10" max="60" step="5" value="30">
         <span class="rp-val" id="roof-pitch-val">30°</span>
       </div>
-      <div class="rp-hint">Gable and hip roofs rise from the top storey's walls. Pitch is the slope; approximate visualization, not a framing spec.</div>
+      <div class="rp-row" id="roof-ridge-row">
+        <label>Ridge</label>
+        <div class="rp-ridge" id="roof-ridges">
+          <button data-ridge="auto" title="Ridge runs along the longer wall">Auto</button>
+          <button data-ridge="x" title="Ridge runs left–right (along X)">↔</button>
+          <button data-ridge="z" title="Ridge runs front–back (along Z)">↕</button>
+        </div>
+      </div>
+      <div class="rp-hint">Gable and hip roofs rise from the top storey's walls. Pitch is the slope; ridge is which way the peak runs (Auto = the longer wall). Approximate visualization, not a framing spec.</div>
     </div>
     <div id="picker" aria-modal="true" role="dialog" aria-label="Choose a template">
       <div id="picker-card">
