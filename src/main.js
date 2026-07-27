@@ -631,6 +631,9 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       __snap: () => app.snap, __setSnap: (partial) => { app.setSnap(partial); syncSnapControls(); plan.draw(); return app.snap; },
       __snapSeamVisible: () => snapGroup.classList.contains('on'),
       __select: (sel) => { app.selection = sel; plan.draw(); renderInspector(); updateStatus(); },
+      // plan-click selection (S1 select tool): drive a plan pointer-down at world {x,z} the same
+      // way the canvas handler does, then return the resulting selection (room hit-test included).
+      __planClick: (x, z) => { controller.pointerDown({ x, z }); plan.draw(); renderInspector(); updateStatus(); return app.selection; },
       // multi-level (storey) seam handles — deterministic driving from the headless harness
       __levels: () => project.levels.map((l) => ({ id: l.id, name: l.name, elevation: l.elevation, height: l.height, walls: l.walls.length, hasRoof: !!l.roof })),
       __activeLevel: () => app.activeLevelId,

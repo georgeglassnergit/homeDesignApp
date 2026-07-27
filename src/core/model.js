@@ -180,6 +180,24 @@ export function polygonCentroid(points) {
   return { x: cx / (3 * a2), z: cz / (3 * a2) };
 }
 
+// True if the plan point {x,z} lies inside the closed polygon of {x,z} points, via the
+// ray-casting / crossing-number test (cast a +x ray and count edge crossings). A polygon of
+// < 3 points contains nothing. Winding-independent, and the half-open edge convention
+// `(zi > z) !== (zj > z)` keeps a ray that grazes a shared vertex from being double-counted.
+// Pure geometry — companion to polygonArea/perimeter/centroid; lets a plan click hit-test
+// which room it landed in without any Three.js.
+export function pointInPolygon(point, points) {
+  if (!point || !Array.isArray(points) || points.length < 3) return false;
+  const { x, z } = point;
+  let inside = false;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+    const xi = points[i].x, zi = points[i].z;
+    const xj = points[j].x, zj = points[j].z;
+    if (((zi > z) !== (zj > z)) && (x < ((xj - xi) * (z - zi)) / (zj - zi) + xi)) inside = !inside;
+  }
+  return inside;
+}
+
 // Recompute each level's floor elevation so storeys stack contiguously from the ground up
 // (index 0 = ground floor at elevation 0). Every level sits on the roof of the one beneath.
 // Pure data mutation — the multi-level edit commands call this to keep storeys stacked with
@@ -238,6 +256,22 @@ export function findOpening(level, openingId) {
 }
 export function findRoom(level, roomId) {
   return level ? level.rooms.find(r => r.id === roomId) || null : null;
+}
+
+// The room on a storey whose floor polygon contains the plan point {x,z}, or null if the
+// click landed outside every room. When rooms nest or overlap, the smallest-area containing
+// room wins (the visually innermost one), so a click always resolves to a single deterministic
+// room. Pure data lookup — companion to findRoom; lets a 2D-plan click select a room the same
+// way a 3D floor-click does, with no Three.js.
+export function roomAtPoint(level, point) {
+  if (!level || !Array.isArray(level.rooms)) return null;
+  let best = null, bestArea = Infinity;
+  for (const r of level.rooms) {
+    if (!pointInPolygon(point, r.points)) continue;
+    const a = polygonArea(r.points);
+    if (a < bestArea) { best = r; bestArea = a; }
+  }
+  return best;
 }
 
 // ---- validation ------------------------------------------------------------

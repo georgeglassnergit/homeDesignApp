@@ -8,7 +8,8 @@
 import {
   createProject, createLevel, createWall, createOpening, createRoof, createRoom, validateProject,
   serialize, deserialize, wallLength, findLevel, findWall, findOpening, findRoom,
-  polygonArea, polygonPerimeter, polygonCentroid, stackElevations, levelFloorArea, projectFloorArea, _resetIds,
+  polygonArea, polygonPerimeter, polygonCentroid, stackElevations, levelFloorArea, projectFloorArea,
+  pointInPolygon, roomAtPoint, _resetIds,
 } from '../core/model.js';
 import { parseLength, formatLength, formatArea, UNIT } from '../core/units.js';
 import { isAvailable, availableTools, createAppState, MODE, TOOL, VIEW } from '../app/state.js';
@@ -930,6 +931,63 @@ ok(serialize(singleProj) === sumBefore, '36q computing the summary mutates nothi
 // real starter: the two-room sample home reports 48 m² total across its 2 rooms
 const shSummary = describeHomeSummary(sampleHome(), { units: UNIT.METRIC });
 ok(near(shSummary.fields.find(f => f.key === 'total-area').sqm, 48) && shSummary.fields.find(f => f.key === 'rooms').text === '2', '36r the two-room sample home summary = 48 m² across 2 rooms');
+
+// ---------------------------------------------------------------------------
+// 37) pointInPolygon / roomAtPoint (pure model) + plan-click room selection.
+//     Rooms were selectable only from the 3D floor; now a 2D-plan click in a room's
+//     interior selects it too — the same {kind:'room',id} a floor-click produces.
+// ---------------------------------------------------------------------------
+const poly37 = [{ x: -4, z: -3 }, { x: 0, z: -3 }, { x: 0, z: 3 }, { x: -4, z: 3 }]; // 4 x 6 rectangle
+// pointInPolygon — the crossing-number test
+ok(pointInPolygon({ x: -2, z: 0 }, poly37), '37a a point inside the polygon is inside');
+ok(!pointInPolygon({ x: 2, z: 0 }, poly37), '37b a point outside the polygon is outside');
+ok(!pointInPolygon({ x: 10, z: 10 }, poly37), '37c a far-away point is outside');
+ok(pointInPolygon({ x: -2, z: 0 }, [...poly37].reverse()), '37d winding-independent (reversed polygon, same result)');
+ok(pointInPolygon({ x: -3.99, z: 2.99 }, poly37), '37e a point just inside a corner is inside');
+ok(!pointInPolygon({ x: -4.01, z: 0 }, poly37), '37f a point just outside an edge is outside');
+ok(!pointInPolygon({ x: 0, z: 0 }, [{ x: 0, z: 0 }, { x: 1, z: 0 }]), '37g a degenerate (< 3 pt) polygon contains nothing');
+ok(!pointInPolygon(null, poly37) && !pointInPolygon({ x: 0, z: 0 }, null), '37h null point / null polygon → false (no throw)');
+
+// roomAtPoint — resolve a plan point to a room on the sampleHome (Living = left half, Bedroom = right half)
+_resetIds();
+const rpHome = sampleHome();
+const rpLevel = rpHome.levels[0];
+const living = rpLevel.rooms[0], bedroom = rpLevel.rooms[1];
+ok(roomAtPoint(rpLevel, { x: -2, z: 0 }) === living, '37i a click in the left half resolves to the Living room');
+ok(roomAtPoint(rpLevel, { x: 2, z: 0 }) === bedroom, '37j a click in the right half resolves to the Bedroom');
+ok(roomAtPoint(rpLevel, { x: 10, z: 10 }) === null, '37k a click outside every room resolves to null');
+ok(roomAtPoint(null, { x: 0, z: 0 }) === null, '37l roomAtPoint is null-safe → null');
+// nesting: the smallest-area containing room wins (visually innermost)
+const nestLevel = createLevel({ id: 'N', height: 2.7, rooms: [
+  createRoom([{ x: -5, z: -5 }, { x: 5, z: -5 }, { x: 5, z: 5 }, { x: -5, z: 5 }], { id: 'big' }),   // 100 m²
+  createRoom([{ x: -1, z: -1 }, { x: 1, z: -1 }, { x: 1, z: 1 }, { x: -1, z: 1 }], { id: 'small' }),  // 4 m², inside big
+] });
+ok(roomAtPoint(nestLevel, { x: 0, z: 0 }).id === 'small', '37m nested rooms: the smallest-area containing room wins');
+ok(roomAtPoint(nestLevel, { x: 3, z: 3 }).id === 'big', '37n a click only inside the outer room selects the outer room');
+
+// ToolController integration: a plan click selects a room via the SELECT tool — no command, no mutation
+_resetIds();
+const rcProj = sampleHome();
+const rcState = createAppState();
+const rcHist = new History(rcProj);
+let rcRebuilds = 0;
+// center the plan on the footprint so world coords map cleanly; the room interiors sit >12px from walls
+const rcPV = createPlanView({ width: 800, height: 600, pxPerMeter: 40, center: { x: 0, z: 0 } });
+const rcTC = new ToolController({ state: rcState, history: rcHist, project: rcProj, planView: rcPV, levelId: rcProj.levels[0].id, rebuild: () => { rcRebuilds++; } });
+const rcBefore = serialize(rcProj);
+rcTC.setTool(TOOL.SELECT);
+rcTC.pointerDown({ x: -2, z: 0 });   // click the Living room interior
+ok(rcState.selection && rcState.selection.kind === 'room' && rcState.selection.id === rcProj.levels[0].rooms[0].id, '37o a plan click in a room interior selects that room (kind:room)');
+rcTC.pointerDown({ x: 2, z: 0 });    // click the Bedroom interior
+ok(rcState.selection.kind === 'room' && rcState.selection.id === rcProj.levels[0].rooms[1].id, '37p clicking the other room re-selects it');
+rcTC.pointerDown({ x: 10, z: 10 });  // click empty space outside every room
+ok(rcState.selection === null, '37q a plan click outside every room clears the selection');
+// precedence: a click landing on a wall still selects the wall, not the room behind it
+rcTC.pointerDown({ x: 0, z: 0 });    // dead on the central partition wall (x = 0)
+ok(rcState.selection && rcState.selection.kind === 'wall', '37r a click on a wall selects the wall (wall precedence over the room behind it)');
+// the whole interaction is view-only: no history entry, model byte-identical (Phase 1 lossless intact)
+ok(rcHist.undoStack.length === 0 && !rcHist.canUndo() && rcRebuilds === 0, '37s selecting via plan click issues no command and no rebuild');
+ok(serialize(rcProj) === rcBefore, '37t plan-click selection mutates nothing — the lossless save is byte-identical');
 
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'} — ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
