@@ -8,7 +8,7 @@
 import {
   createProject, createLevel, createWall, createOpening, createRoof, createRoom, validateProject,
   serialize, deserialize, wallLength, findLevel, findWall, findOpening, findRoom,
-  polygonArea, polygonPerimeter, polygonCentroid, stackElevations, _resetIds,
+  polygonArea, polygonPerimeter, polygonCentroid, stackElevations, levelFloorArea, projectFloorArea, _resetIds,
 } from '../core/model.js';
 import { parseLength, formatLength, formatArea, UNIT } from '../core/units.js';
 import { isAvailable, availableTools, createAppState, MODE, TOOL, VIEW } from '../app/state.js';
@@ -19,7 +19,7 @@ import { ROOF_TYPES, DEFAULT_ROOF_PITCH, isPitched, roofFootprint, roofSolid, pi
 import { measureDistance, measureMidpoint, describeMeasure } from '../edit/measure.js';
 // Selection inspector — pure descriptor + edit builder (the Simple/Pro exact-dimension seam).
 // Must stay three-free / DOM-free; importing under Node is itself the separation guard.
-import { describeSelection, buildDimensionEdit } from '../app/inspector.js';
+import { describeSelection, describeHomeSummary, buildDimensionEdit } from '../app/inspector.js';
 import { History } from '../edit/history.js';
 // S5 cutaway decision — pure math, must stay three-free (importing under Node is the guard).
 import { cutawayHiddenWalls, wallsCenterXZ } from '../viewer/cutaway.js';
@@ -878,6 +878,58 @@ const shRoom = sampleHome().levels[0].rooms[0];
 const shc = polygonCentroid(shRoom.points);
 const xs = shRoom.points.map(p => p.x), zs = shRoom.points.map(p => p.z);
 ok(shc.x >= Math.min(...xs) && shc.x <= Math.max(...xs) && shc.z >= Math.min(...zs) && shc.z <= Math.max(...zs), '35g sampleHome room centroid lies within the room bounds');
+
+// ---------------------------------------------------------------------------
+// 36) Whole-home floor-area summary — levelFloorArea / projectFloorArea (pure model)
+//     and describeHomeSummary (the read-only inspector empty-state overview).
+// ---------------------------------------------------------------------------
+const sq8x6 = [{ x: -4, z: -3 }, { x: 0, z: -3 }, { x: 0, z: 3 }, { x: -4, z: 3 }]; // 4 x 6 = 24 m²
+const lvlG = createLevel({ id: 'G', name: 'Ground floor', height: 2.7, rooms: [
+  createRoom(sq8x6, { id: 'r1', name: 'Living' }),
+  createRoom([{ x: 0, z: -3 }, { x: 4, z: -3 }, { x: 4, z: 3 }, { x: 0, z: 3 }], { id: 'r2', name: 'Bedroom' }), // 24 m²
+] });
+ok(near(levelFloorArea(lvlG), 48), '36a levelFloorArea sums a storey\'s room polygons (24 + 24 = 48 m²)');
+ok(levelFloorArea(createLevel({ id: 'E', height: 2.7 })) === 0, '36b a storey with no rooms measures 0 (never NaN)');
+ok(levelFloorArea(null) === 0, '36c levelFloorArea is null-safe → 0');
+
+const singleProj = createProject({ name: 'My home', levels: [lvlG] });
+const gfa = projectFloorArea(singleProj);
+ok(near(gfa.total, 48) && gfa.rooms === 2 && gfa.levels === 1, '36d projectFloorArea totals GFA, room count, storey count');
+ok(gfa.byLevel.length === 1 && gfa.byLevel[0].id === 'G' && near(gfa.byLevel[0].area, 48) && gfa.byLevel[0].rooms === 2, '36e per-storey breakdown carries id/name/area/rooms');
+
+// two-storey home: total is the sum across storeys, breakdown is per storey
+const lvlU = createLevel({ id: 'U', name: 'Upper', height: 2.7, rooms: [createRoom(sq8x6, { id: 'r3', name: 'Loft' })] }); // 24 m²
+const twoProj = createProject({ name: 'Two storey', levels: [lvlG, lvlU] });
+const gfa2 = projectFloorArea(twoProj);
+ok(near(gfa2.total, 72) && gfa2.levels === 2 && gfa2.rooms === 3, '36f projectFloorArea sums GFA across storeys (48 + 24 = 72 m²)');
+ok(gfa2.byLevel.length === 2 && near(gfa2.byLevel[1].area, 24) && gfa2.byLevel[1].name === 'Upper', '36g the breakdown lists every storey');
+
+// describeHomeSummary — the read-only overview shown when nothing is selected
+const sum1 = describeHomeSummary(singleProj, { units: UNIT.METRIC });
+ok(sum1 && sum1.type === 'home' && sum1.editable === false && sum1.title === 'My home', '36h summary is a read-only descriptor titled by the project name');
+const totF = sum1.fields.find(f => f.key === 'total-area');
+ok(totF && near(totF.sqm, 48) && totF.text === formatArea(48, UNIT.METRIC), '36i total-area field = 48 m², formatted metric');
+ok(!sum1.fields.some(f => f.key.startsWith('level-')), '36j a single-storey home shows NO per-storey breakdown (it would just repeat the total)');
+ok(sum1.fields.find(f => f.key === 'rooms').text === '2', '36k a single-storey home shows the room count');
+// units toggle: the whole readout re-formats to imperial (novice-first, both tiers)
+ok(describeHomeSummary(singleProj, { units: UNIT.IMPERIAL }).fields.find(f => f.key === 'total-area').text === formatArea(48, UNIT.IMPERIAL), '36l the summary follows the imperial units toggle');
+// two-storey home DOES show the per-storey breakdown
+const sum2 = describeHomeSummary(twoProj, { units: UNIT.METRIC });
+ok(sum2.fields.some(f => f.key === 'level-G') && sum2.fields.some(f => f.key === 'level-U'), '36m a multi-storey home lists a per-storey area row for each storey');
+ok(near(sum2.fields.find(f => f.key === 'level-U').sqm, 24), '36n the per-storey row carries that storey\'s own area (Upper = 24 m²)');
+ok(sum2.fields.find(f => f.key === 'rooms').text === '3 · 2', '36o a multi-storey home shows rooms · storeys');
+// an empty home invites drawing a room instead of dwelling on a bare 0
+const emptyProj = createProject({ name: 'Blank', levels: [createLevel({ id: 'X', height: 2.7 })] });
+const sumE = describeHomeSummary(emptyProj);
+ok(near(sumE.fields.find(f => f.key === 'total-area').sqm, 0) && /Draw a room/.test(sumE.hint), '36p an empty home reads 0 m² with a "draw a room" hint');
+// the summary is a pure read — computing it mutates nothing (the lossless save is untouched)
+const sumBefore = serialize(singleProj);
+describeHomeSummary(singleProj, { units: UNIT.IMPERIAL });
+describeHomeSummary(singleProj, { units: UNIT.METRIC });
+ok(serialize(singleProj) === sumBefore, '36q computing the summary mutates nothing — the lossless save is byte-identical');
+// real starter: the two-room sample home reports 48 m² total across its 2 rooms
+const shSummary = describeHomeSummary(sampleHome(), { units: UNIT.METRIC });
+ok(near(shSummary.fields.find(f => f.key === 'total-area').sqm, 48) && shSummary.fields.find(f => f.key === 'rooms').text === '2', '36r the two-room sample home summary = 48 m² across 2 rooms');
 
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'} — ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

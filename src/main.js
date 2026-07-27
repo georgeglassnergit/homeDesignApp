@@ -5,7 +5,7 @@ import { serialize, deserialize, validateProject, projectCounts, createLevel, cr
 import { createAppState, availableTools, isAvailable, MODE, TOOL, VIEW, CAMERA } from './app/state.js';
 import { cutawayHiddenWalls } from './viewer/cutaway.js';
 import { formatLength, UNIT } from './core/units.js';
-import { describeSelection, buildDimensionEdit } from './app/inspector.js';
+import { describeSelection, describeHomeSummary, buildDimensionEdit } from './app/inspector.js';
 import { History } from './edit/history.js';
 import { ToolController } from './edit/tools.js';
 import { createPlanView } from './edit/planView.js';
@@ -127,7 +127,10 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
 
     function renderInspector() {
       if (!insBox) return;
-      const desc = describeSelection(project, app.selection, { mode: app.mode, units: app.units });
+      // Nothing selected → show the whole-home floor-area summary instead of a dead empty
+      // state (a read-only overview: total GFA + per-storey breakdown + room count, per units).
+      const desc = describeSelection(project, app.selection, { mode: app.mode, units: app.units })
+        || describeHomeSummary(project, { units: app.units });
       if (!desc) {
         insBox.className = '';
         insBox.innerHTML = '<div class="ins-empty">No selection — click a wall, opening or room</div>';
@@ -619,6 +622,8 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       __isDirty: isDirty, __setConfirm: (fn) => { confirmDiscard = fn; },
       // inspector / Simple-Pro seam handles (deterministic driving from the headless harness)
       __inspect: () => describeSelection(project, app.selection, { mode: app.mode, units: app.units }),
+      __summary: () => describeHomeSummary(project, { units: app.units }),
+      __inspectorText: () => (insBox ? insBox.textContent : ''),
       __commitField: (key, raw) => { commitField(key, raw); return $('ins-msg') ? $('ins-msg').textContent : ''; },
       __setMode: (m) => { app.setMode(m); syncModeButtons(); syncSnapSeam(); syncLevelSeam(); syncRoofSeam(); syncMeasureSeam(); renderInspector(); updateStatus(); },
       __setUnits: (u) => { app.setUnits(u); syncUnitButtons(); renderInspector(); },

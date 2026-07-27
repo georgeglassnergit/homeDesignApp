@@ -6,7 +6,7 @@
 // parse feet-and-inches / metric via units.js. main.js renders this descriptor to DOM and
 // dispatches the edit through history; the Node test suite asserts on the descriptor + command
 // directly. ZERO Three.js and ZERO DOM in here (importing under Node is the separation guard).
-import { findWall, findOpening, findRoom, wallLength, polygonArea, polygonPerimeter } from '../core/model.js';
+import { findWall, findOpening, findRoom, wallLength, polygonArea, polygonPerimeter, projectFloorArea } from '../core/model.js';
 import { isAvailable, MODE } from './state.js';
 import { formatLength, formatArea, parseLength, UNIT } from '../core/units.js';
 import { resizeWall, resizeOpening } from '../edit/commands.js';
@@ -83,6 +83,39 @@ export function describeSelection(project, selection, { mode = MODE.SIMPLE, unit
   }
   for (const f of fields) f.text = formatLength(f.meters, units);
   return { title, type: loc.kind === 'wall' ? 'wall' : loc.opening.kind, id: selection.id, editable, fields };
+}
+
+// Describe the whole-home floor-area summary shown when nothing is selected (the inspector's
+// otherwise-dead empty state). A READ-ONLY overview — total gross floor area, a per-storey
+// breakdown when the home has more than one storey, and the room count — formatted per the
+// display-units toggle. Available in BOTH tiers (novice-first): it answers "how big is my
+// house?" from the data, carries no command, stores nothing, and never touches the save
+// contract. Returns a descriptor shaped like describeSelection's read-only case so main.js
+// renders it with the same row template. When there are no rooms yet, the hint invites the
+// user to draw one instead of dwelling on a bare 0.
+export function describeHomeSummary(project, { units = UNIT.METRIC } = {}) {
+  if (!project || !Array.isArray(project.levels)) return null;
+  const gfa = projectFloorArea(project);
+  const fields = [
+    { key: 'total-area', label: 'Total floor area', sqm: round(gfa.total), text: formatArea(gfa.total, units) },
+  ];
+  // per-storey breakdown only when it adds information (a single storey === the total)
+  if (gfa.levels > 1) {
+    for (const l of gfa.byLevel) {
+      fields.push({ key: `level-${l.id}`, label: l.name, sqm: round(l.area), text: formatArea(l.area, units) });
+    }
+  }
+  fields.push({ key: 'rooms', label: gfa.levels > 1 ? 'Rooms · storeys' : 'Rooms', count: gfa.rooms,
+    text: gfa.levels > 1 ? `${gfa.rooms} · ${gfa.levels}` : String(gfa.rooms) });
+  return {
+    title: project.name || 'Home',
+    type: 'home',
+    editable: false,
+    hint: gfa.rooms === 0
+      ? 'Draw a room to start measuring your home'
+      : 'Click a wall, opening or room to edit it',
+    fields,
+  };
 }
 
 // Build the undoable command for a single dimension edit. Returns { command, meters } on
