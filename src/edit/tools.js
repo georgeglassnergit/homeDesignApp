@@ -5,7 +5,7 @@
 // (so it loads in the engine-independent test suite — proving that separation).
 
 import { TOOL } from '../app/state.js';
-import { createWall, createOpening, wallLength, findLevel, findWall } from '../core/model.js';
+import { createWall, createOpening, wallLength, findLevel, findWall, roomAtPoint } from '../core/model.js';
 import { addWall, moveWallVertex, removeWall, addOpening, removeOpening, composite } from './commands.js';
 import { snapPoint } from './snapping.js';
 import { measureDistance } from './measure.js';
@@ -99,7 +99,13 @@ export class ToolController {
       return;
     }
     const whit = this.planView.nearestWallHit(world, walls, WALL_TOL_PX);
-    this.state.selection = whit ? { kind: 'wall', id: whit.wallId } : null;
+    if (whit) { this.state.selection = { kind: 'wall', id: whit.wallId }; return; }
+    // Nothing precise grabbed — fall back to a room hit-test: a click in a room's interior
+    // selects that room (the SAME {kind:'room',id} a 3D floor-click produces), so the plan's
+    // area-labelled rooms are clickable, not just selectable from the 3D floor. Selection is
+    // view state — no command, no model mutation. A click outside every room clears selection.
+    const room = this.level ? roomAtPoint(this.level, world) : null;
+    this.state.selection = room ? { kind: 'room', id: room.id } : null;
   }
 
   _commitDrag(world) {
