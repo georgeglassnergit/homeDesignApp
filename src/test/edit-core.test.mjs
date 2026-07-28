@@ -13,14 +13,14 @@ import {
 } from '../core/model.js';
 import { parseLength, formatLength, formatArea, UNIT } from '../core/units.js';
 import { isAvailable, availableTools, createAppState, MODE, TOOL, VIEW } from '../app/state.js';
-import { addWall, moveWallVertex, removeWall, addOpening, removeOpening, loadTemplate, composite, setView, resizeWall, resizeOpening, addLevel, removeLevel, renameLevel, setLevelHeight, setLevelRoof, setRoofType } from '../edit/commands.js';
+import { addWall, moveWallVertex, removeWall, addOpening, removeOpening, loadTemplate, composite, setView, resizeWall, resizeOpening, addLevel, removeLevel, renameLevel, renameRoom, setLevelHeight, setLevelRoof, setRoofType } from '../edit/commands.js';
 // Pure roof-shape math (gable/hip) — must stay three-free (importing under Node is the guard).
 import { ROOF_TYPES, DEFAULT_ROOF_PITCH, isPitched, roofFootprint, roofSolid, pitchRise } from '../core/roofShape.js';
 // Pure measure-tool math (the Pro-seam ruler) — three-free (importing under Node is the guard).
 import { measureDistance, measureMidpoint, describeMeasure } from '../edit/measure.js';
 // Selection inspector — pure descriptor + edit builder (the Simple/Pro exact-dimension seam).
 // Must stay three-free / DOM-free; importing under Node is itself the separation guard.
-import { describeSelection, describeHomeSummary, buildDimensionEdit } from '../app/inspector.js';
+import { describeSelection, describeHomeSummary, buildDimensionEdit, buildRoomRename, MAX_ROOM_NAME } from '../app/inspector.js';
 import { History } from '../edit/history.js';
 // S5 cutaway decision — pure math, must stay three-free (importing under Node is the guard).
 import { cutawayHiddenWalls, wallsCenterXZ } from '../viewer/cutaway.js';
@@ -988,6 +988,63 @@ ok(rcState.selection && rcState.selection.kind === 'wall', '37r a click on a wal
 // the whole interaction is view-only: no history entry, model byte-identical (Phase 1 lossless intact)
 ok(rcHist.undoStack.length === 0 && !rcHist.canUndo() && rcRebuilds === 0, '37s selecting via plan click issues no command and no rebuild');
 ok(serialize(rcProj) === rcBefore, '37t plan-click selection mutates nothing — the lossless save is byte-identical');
+
+// ---------------------------------------------------------------------------
+// 38) renameRoom command + buildRoomRename + the Pro-seam room-name inspector field.
+//     A room's NAME is editable in Pro (its area/perimeter stay read-only). Renaming only
+//     rewrites the room's existing `name` field, so it's undoable and can never add a save field.
+_resetIds();
+const rrProj = sampleHome();
+const rrLevel = rrProj.levels[0];
+const rrLiving = rrLevel.rooms[0], rrBedroom = rrLevel.rooms[1];
+const rrSel = { kind: 'room', id: rrLiving.id };
+const rrBefore = serialize(rrProj);
+
+// 38a-d) the command mutates the name, undoes byte-losslessly, and throws on a missing room.
+const rrCmd = renameRoom(rrLevel.id, rrLiving.id, 'Lounge');
+rrCmd.do(rrProj);
+ok(findRoom(rrLevel, rrLiving.id).name === 'Lounge', '38a renameRoom sets the room name');
+rrCmd.undo(rrProj);
+ok(findRoom(rrLevel, rrLiving.id).name === 'Living', '38b undo restores the exact prior name');
+ok(serialize(rrProj) === rrBefore, '38c rename + undo is byte-lossless (Phase 1 save intact)');
+let rrThrew = false;
+try { renameRoom(rrLevel.id, 'no_such_room', 'X').do(rrProj); } catch { rrThrew = true; }
+ok(rrThrew, '38d renameRoom throws on a missing room');
+
+// 38e-h) the inspector descriptor: no rename slot in Simple, a rename slot in Pro, area read-only.
+const rrSimple = describeSelection(rrProj, rrSel, { mode: MODE.SIMPLE, units: UNIT.METRIC });
+ok(rrSimple.type === 'room' && !rrSimple.rename, '38e Simple mode shows no room-rename field (clean read-only card)');
+const rrPro = describeSelection(rrProj, rrSel, { mode: MODE.PRO, units: UNIT.METRIC });
+ok(rrPro.rename && rrPro.rename.key === 'name' && rrPro.rename.value === 'Living', '38f Pro exposes an editable Name field seeded with the current name');
+ok(rrPro.editable === false && rrPro.fields.find(f => f.key === 'area'), '38g the area/perimeter readout stays read-only even in Pro');
+ok(isAvailable('room-rename', MODE.PRO) && !isAvailable('room-rename', MODE.SIMPLE), '38h room-rename registers once in the tier table (Pro-only)');
+
+// 38i-o) buildRoomRename: trims/collapses/caps input, rejects empty, no-ops an unchanged name.
+const bGood = buildRoomRename(rrProj, rrSel, '  Master   Suite  ');
+ok(bGood.command && bGood.name === 'Master Suite', '38i buildRoomRename trims and collapses interior whitespace');
+ok(buildRoomRename(rrProj, rrSel, '   ').error, '38j an all-whitespace name is rejected');
+ok(buildRoomRename(rrProj, rrSel, 'Living').unchanged === true, '38k an unchanged name is a no-op (no history push)');
+const bLong = buildRoomRename(rrProj, rrSel, 'z'.repeat(MAX_ROOM_NAME + 25));
+ok(bLong.command && bLong.name.length === MAX_ROOM_NAME, '38l an over-long name is capped at MAX_ROOM_NAME');
+ok(buildRoomRename(rrProj, { kind: 'wall', id: rrLevel.walls[0].id }, 'X').error, '38m a non-room selection is rejected');
+ok(buildRoomRename(rrProj, null, 'X').error, '38n a null selection is rejected');
+ok(buildRoomRename(rrProj, rrSel, 'A/B ensuite').name === 'A/B ensuite', '38o punctuation in a name is preserved (only whitespace is normalised)');
+
+// 38p-t) history integration: execute → name changes → undo/redo lossless; no new save field.
+_resetIds();
+const rrProj2 = sampleHome();
+const rrHist = new History(rrProj2);
+const rr2Living = rrProj2.levels[0].rooms[0];
+const rr2Before = serialize(rrProj2);
+rrHist.execute(buildRoomRename(rrProj2, { kind: 'room', id: rr2Living.id }, 'Great room').command);
+ok(findRoom(rrProj2.levels[0], rr2Living.id).name === 'Great room', '38p a committed rename changes the room name');
+const rr2Renamed = serialize(rrProj2);
+ok(deserialize(rr2Renamed) && validateProject(deserialize(rr2Renamed)).ok, '38q a renamed project still deserializes + validates (no schema change)');
+ok(JSON.stringify(Object.keys(JSON.parse(rr2Renamed).levels[0].rooms[0]).sort()) === JSON.stringify(Object.keys(JSON.parse(rr2Before).levels[0].rooms[0]).sort()), '38r renaming adds no new room field — the save shape is unchanged');
+rrHist.undo();
+ok(serialize(rrProj2) === rr2Before && findRoom(rrProj2.levels[0], rr2Living.id).name === 'Living', '38s undo restores the original name byte-losslessly');
+rrHist.redo();
+ok(serialize(rrProj2) === rr2Renamed, '38t redo re-applies the rename byte-losslessly');
 
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'} — ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

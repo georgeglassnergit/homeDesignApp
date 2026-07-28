@@ -21,6 +21,7 @@ export const FEATURE_TIERS = Object.freeze({
   'materials-swatch':  MODE.SIMPLE,
   // revealed in Pro
   'exact-dimensions':  MODE.PRO,
+  'room-rename':       MODE.PRO,      // rename a selected room from the inspector (undoable)
   'snapping-constraints': MODE.PRO,
   'multi-level':       MODE.PRO,
   'roof-editor':       MODE.PRO,

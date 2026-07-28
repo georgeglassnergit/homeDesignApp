@@ -3,7 +3,7 @@
 // Scene rebuild is a pure function of the model after each command (done by the view layer).
 // Model/view separation: ZERO Three.js in here — commands only touch the plain Project.
 
-import { findLevel, findWall, findOpening, stackElevations } from '../core/model.js';
+import { findLevel, findWall, findOpening, findRoom, stackElevations } from '../core/model.js';
 import { DEFAULT_ROOF_PITCH } from '../core/roofShape.js';
 
 const clone = (v) => JSON.parse(JSON.stringify(v));
@@ -262,6 +262,29 @@ export function renameLevel(levelId, name) {
     undo(project) {
       const l = findLevel(project, levelId);
       if (l) l.name = prev;
+    },
+  };
+}
+
+// Rename a room (the Pro-seam room-name edit). Renaming touches only the room's existing
+// `name` field — a field createRoom already writes and serialize already round-trips — so it
+// adds no new save field and can never break the Phase 1 lossless contract. Undo restores the
+// exact prior name; the caller trims/validates the input before building the command.
+export function renameRoom(levelId, roomId, name) {
+  let prev;
+  return {
+    name: 'Rename room',
+    do(project) {
+      const l = findLevel(project, levelId);
+      const r = l && findRoom(l, roomId);
+      if (!r) throw new Error(`renameRoom: missing room ${roomId} on level ${levelId}`);
+      prev = r.name;
+      r.name = name;
+    },
+    undo(project) {
+      const l = findLevel(project, levelId);
+      const r = l && findRoom(l, roomId);
+      if (r) r.name = prev;
     },
   };
 }
