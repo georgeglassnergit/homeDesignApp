@@ -9,7 +9,11 @@
 import { findWall, findOpening, findRoom, wallLength, polygonArea, polygonPerimeter, projectFloorArea } from '../core/model.js';
 import { isAvailable, MODE } from './state.js';
 import { formatLength, formatArea, parseLength, UNIT } from '../core/units.js';
-import { resizeWall, resizeOpening } from '../edit/commands.js';
+import { resizeWall, resizeOpening, renameRoom } from '../edit/commands.js';
+
+// Longest room name we accept — long enough for "Master bedroom / ensuite", short enough that
+// the label never overruns the inspector or a plan-canvas chip. Enforced in buildRoomRename.
+export const MAX_ROOM_NAME = 40;
 
 // Locate the level + object a selection {kind,id} refers to, scanning every level so the
 // inspector works in multi-level projects (the model already supports them).
@@ -53,8 +57,16 @@ export function describeSelection(project, selection, { mode = MODE.SIMPLE, unit
       title: loc.room.name || 'Room',
       type: 'room',
       id: selection.id,
-      editable: false,           // a measurement readout, not an input, in Simple AND Pro
-      hint: 'Floor area updates automatically as you edit the room',
+      editable: false,           // the area/perimeter fields are a measurement readout, never inputs
+      // The room's NAME, however, is editable in Pro (novice Simple keeps a clean read-only card).
+      // This is a separate text edit from the numeric dimension fields — it commits a renameRoom
+      // command, not a parsed length — so it's carried in its own `rename` slot, gated by the seam.
+      rename: isAvailable('room-rename', mode)
+        ? { key: 'name', label: 'Name', value: loc.room.name || 'Room' }
+        : null,
+      hint: isAvailable('room-rename', mode)
+        ? 'Rename the room above; floor area updates automatically as you edit it'
+        : 'Floor area updates automatically as you edit the room',
       fields: [
         { key: 'area',      label: 'Floor area', sqm: round(area),        text: formatArea(area, units) },
         { key: 'perimeter', label: 'Perimeter',  meters: round(perimeter), text: formatLength(perimeter, units) },
@@ -136,4 +148,19 @@ export function buildDimensionEdit(project, selection, key, rawValue, { units = 
     ? resizeWall(loc.level.id, selection.id, { [key]: meters })
     : resizeOpening(loc.level.id, selection.id, { [key]: meters });
   return { command, meters: round(meters) };
+}
+
+// Build the undoable command for a room-name edit (the Pro-seam room-rename). Returns
+// { command, name } on success, { unchanged: true } when the trimmed name equals the current
+// one (so the caller skips a no-op history push — e.g. a blur that didn't change anything), or
+// { error } when the selection isn't a room or the name is empty. The name is trimmed, collapsed
+// of runs of whitespace, and capped at MAX_ROOM_NAME so a label can't overrun the UI. Renaming
+// only rewrites the room's existing `name` field, so it never touches the save schema.
+export function buildRoomRename(project, selection, rawValue) {
+  const loc = locate(project, selection);
+  if (!loc || loc.kind !== 'room') return { error: 'Select a room to rename' };
+  const name = String(rawValue ?? '').replace(/\s+/g, ' ').trim().slice(0, MAX_ROOM_NAME);
+  if (!name) return { error: 'Name can’t be empty' };
+  if (name === loc.room.name) return { unchanged: true };
+  return { command: renameRoom(loc.level.id, selection.id, name), name };
 }

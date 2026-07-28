@@ -5,7 +5,7 @@ import { serialize, deserialize, validateProject, projectCounts, createLevel, cr
 import { createAppState, availableTools, isAvailable, MODE, TOOL, VIEW, CAMERA } from './app/state.js';
 import { cutawayHiddenWalls } from './viewer/cutaway.js';
 import { formatLength, UNIT } from './core/units.js';
-import { describeSelection, describeHomeSummary, buildDimensionEdit } from './app/inspector.js';
+import { describeSelection, describeHomeSummary, buildDimensionEdit, buildRoomRename } from './app/inspector.js';
 import { History } from './edit/history.js';
 import { ToolController } from './edit/tools.js';
 import { createPlanView } from './edit/planView.js';
@@ -125,6 +125,12 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
     const insBox = $('inspector');
     let committingField = false;   // guards the re-render blur from re-committing
 
+    // The inspector renders descriptor strings (titles, the editable room name) via innerHTML.
+    // Room names are now user-typed, so escape any string that lands in HTML to keep a name like
+    // `<img onerror=...>` inert — a real edit path can no longer inject markup into the panel.
+    const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
     function renderInspector() {
       if (!insBox) return;
       // Nothing selected → show the whole-home floor-area summary instead of a dead empty
@@ -136,6 +142,14 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
         insBox.innerHTML = '<div class="ins-empty">No selection — click a wall, opening or room</div>';
         return;
       }
+      // A room in Pro carries a `rename` slot: an editable NAME input, distinct from the numeric
+      // dimension fields (it commits a renameRoom command, not a parsed length). Rendered as the
+      // first row so the name reads as the heading of the readout beneath it.
+      const nameRow = desc.rename
+        ? `<label class="ins-row"><span>${desc.rename.label}</span>`
+          + `<input class="ins-field ins-name" data-rename="1" value="${esc(desc.rename.value)}" `
+          + `maxlength="40" spellcheck="false" autocomplete="off"></label>`
+        : '';
       const rows = desc.fields.map((f) => desc.editable
         ? `<label class="ins-row"><span>${f.label}</span>`
           + `<input class="ins-field" data-key="${f.key}" value="${f.text}" spellcheck="false" autocomplete="off"></label>`
@@ -144,9 +158,9 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
         ? `<div class="ins-hint">Type an exact size (e.g. 3.2m or 10'6") and press Enter</div>`
         : `<div class="ins-hint">${desc.hint || 'Switch to <b>Pro</b> to edit exact dimensions'}</div>`;
       insBox.className = desc.editable ? 'editable' : '';
-      insBox.innerHTML = `<div class="ins-title">${desc.title}</div>${rows}${foot}<div class="ins-msg" id="ins-msg"></div>`;
+      insBox.innerHTML = `<div class="ins-title">${esc(desc.title)}</div>${nameRow}${rows}${foot}<div class="ins-msg" id="ins-msg"></div>`;
       if (desc.editable) {
-        insBox.querySelectorAll('.ins-field').forEach((inp) => {
+        insBox.querySelectorAll('.ins-field:not(.ins-name)').forEach((inp) => {
           inp.addEventListener('keydown', (e) => {
             e.stopPropagation();   // keep Del/Ctrl-Z etc. from firing while typing a size
             if (e.key === 'Enter') { e.preventDefault(); commitField(inp.dataset.key, inp.value); }
@@ -154,6 +168,32 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
           inp.addEventListener('blur', () => commitField(inp.dataset.key, inp.value));
         });
       }
+      if (desc.rename) {
+        const nameInp = insBox.querySelector('.ins-name');
+        if (nameInp) {
+          nameInp.addEventListener('keydown', (e) => {
+            e.stopPropagation();   // keep Del/Ctrl-Z etc. from firing while typing the name
+            if (e.key === 'Enter') { e.preventDefault(); nameInp.blur(); }
+          });
+          nameInp.addEventListener('blur', () => commitRoomName(nameInp.value));
+        }
+      }
+    }
+
+    // Commit a room-name edit through history (Pro-seam). A no-op (name unchanged) pushes nothing
+    // to the undo stack; a rename only rewrites the room's existing `name` field, so unlike a
+    // dimension edit it can never invalidate geometry — no re-validate/rollback dance is needed.
+    function commitRoomName(raw) {
+      if (committingField) return;   // re-render on commit blurs the input; don't loop
+      committingField = true;
+      try {
+        const res = buildRoomRename(project, app.selection, raw);
+        if (res.unchanged) return;
+        const msg = $('ins-msg');
+        if (res.error) { if (msg) msg.textContent = res.error; return; }
+        history.execute(res.command);
+        refresh();                   // rebuild plan (room labels) + re-render inspector title
+      } finally { committingField = false; }
     }
 
     function commitField(key, raw) {
@@ -625,6 +665,11 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       __summary: () => describeHomeSummary(project, { units: app.units }),
       __inspectorText: () => (insBox ? insBox.textContent : ''),
       __commitField: (key, raw) => { commitField(key, raw); return $('ins-msg') ? $('ins-msg').textContent : ''; },
+      __renameRoom: (raw) => {
+        commitRoomName(raw);
+        const loc = describeSelection(project, app.selection, { mode: app.mode, units: app.units });
+        return { title: loc ? loc.title : null, msg: $('ins-msg') ? $('ins-msg').textContent : '' };
+      },
       __setMode: (m) => { app.setMode(m); syncModeButtons(); syncSnapSeam(); syncLevelSeam(); syncRoofSeam(); syncMeasureSeam(); renderInspector(); updateStatus(); },
       __setUnits: (u) => { app.setUnits(u); syncUnitButtons(); renderInspector(); },
       // snapping/constraint seam handles (deterministic driving from the headless harness)
