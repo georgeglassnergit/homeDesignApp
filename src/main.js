@@ -1,7 +1,7 @@
 import { createViewer } from './viewer/viewer.js';
 import { createWalkController } from './viewer/walkCamera.js';
 import { buildScene, sceneBounds, rebuildGeometry } from './build/sceneBuilder.js';
-import { serialize, deserialize, validateProject, projectCounts, createLevel, createRoof } from './core/model.js';
+import { serialize, deserialize, validateProject, projectCounts, createLevel, createRoof, findLevel, roomAtPoint, polygonCentroid } from './core/model.js';
 import { createAppState, availableTools, isAvailable, MODE, TOOL, VIEW, CAMERA } from './app/state.js';
 import { cutawayHiddenWalls } from './viewer/cutaway.js';
 import { formatLength, UNIT } from './core/units.js';
@@ -61,7 +61,11 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       rebuild: () => refresh(),        // set below (function hoisted)
     });
 
-    const plan = createPlanCanvas(planCanvasEl, { project, controller, planView, state: app, levelId: app.activeLevelId, onSelect: () => renderInspector() });
+    const plan = createPlanCanvas(planCanvasEl, {
+      project, controller, planView, state: app, levelId: app.activeLevelId,
+      onSelect: () => renderInspector(),
+      onRoomActivate: (world) => beginPlanRoomRename(world),
+    });
 
     // A model edit re-derives the 3D geometry and redraws the plan + status. The model
     // is the single source of truth; both views are pure functions of it.
@@ -194,6 +198,68 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
         history.execute(res.command);
         refresh();                   // rebuild plan (room labels) + re-render inspector title
       } finally { committingField = false; }
+    }
+
+    // --- A1: rename a room by double-clicking it on the plan (Pro-seam room-rename) ----------
+    // A plan-side entry to the SAME renameRoom command the inspector uses (via commitRoomName +
+    // buildRoomRename), so it inherits the identical trim/validate/lossless/undo guarantees. The
+    // hit-test (roomAtPoint) and label placement (polygonCentroid) are the already-tested pure
+    // core functions; this wiring just opens a floating <input> over the room's centroid and
+    // feeds its value back through the shared command path. It stores no geometry and, being a
+    // rename, never touches the save schema.
+    const planPanel = $('plan-panel');
+    let roomEditor = null;           // the active floating <input>, or null when idle
+
+    function closeRoomLabelEditor() {
+      if (roomEditor) { roomEditor.remove(); roomEditor = null; }
+    }
+
+    // Open the inline name editor centered on a room's plan centroid, pre-filled with its name.
+    // Enter/blur commits through commitRoomName (shared with the inspector); Escape cancels with
+    // no history push. The editor is a plain DOM input laid over #plan-panel (position:relative),
+    // so it self-positions from the same worldToScreen mapping the plan renderer uses.
+    function openRoomLabelEditor(room) {
+      closeRoomLabelEditor();
+      if (!planPanel) return null;
+      const c = planView.worldToScreen(polygonCentroid(room.points));
+      const input = document.createElement('input');
+      input.className = 'plan-name-editor';
+      input.value = room.name || '';
+      input.setAttribute('maxlength', '60');
+      input.style.left = `${c.px}px`;
+      input.style.top = `${c.py}px`;
+      planPanel.appendChild(input);
+      roomEditor = input;
+      input.focus();
+      input.select();
+      let done = false;                                  // guard: commit-then-blur must fire once
+      const commit = () => { if (done) return; done = true; const v = input.value; closeRoomLabelEditor(); commitRoomName(v); };
+      const cancel = () => { if (done) return; done = true; closeRoomLabelEditor(); };
+      input.addEventListener('keydown', (e) => {
+        e.stopPropagation();          // keep Del/Ctrl-Z/tool hotkeys from firing while typing a name
+        if (e.key === 'Enter') { e.preventDefault(); commit(); }
+        else if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+      });
+      input.addEventListener('blur', commit);
+      return input;
+    }
+
+    // Resolve the room under a plan double-click and, in Pro, open its inline name editor. Only
+    // acts under the SELECT tool so a double-click that ends a wall chain never also renames. In
+    // Simple the room is still selected (surfacing its read-only readout) but not editable — the
+    // room-rename seam gates the edit exactly as the inspector does. Returns the room, or null.
+    function beginPlanRoomRename(world) {
+      closeRoomLabelEditor();
+      if (app.activeTool !== TOOL.SELECT) return null;
+      const lvl = findLevel(project, app.activeLevelId);
+      const room = lvl ? roomAtPoint(lvl, world) : null;
+      if (!room) return null;
+      app.selection = { kind: 'room', id: room.id };
+      renderInspector();
+      updateStatus();
+      if (!isAvailable('room-rename', app.mode)) { hint('Switch to Pro to rename a room'); return room; }
+      openRoomLabelEditor(room);
+      return room;
     }
 
     function commitField(key, raw) {
@@ -679,6 +745,13 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       // plan-click selection (S1 select tool): drive a plan pointer-down at world {x,z} the same
       // way the canvas handler does, then return the resulting selection (room hit-test included).
       __planClick: (x, z) => { controller.pointerDown({ x, z }); plan.draw(); renderInspector(); updateStatus(); return app.selection; },
+      // A1: plan double-click room rename. __planDblClick resolves+selects the room and (in Pro)
+      // opens the inline editor; __roomEditor reports its live state; __roomEditorCommit drives a
+      // real Enter through the editor's own handler so the headless harness exercises the DOM path.
+      __planDblClick: (x, z) => { const room = beginPlanRoomRename({ x, z }); return { room: room ? room.id : null, editing: !!roomEditor, value: roomEditor ? roomEditor.value : null, selection: app.selection }; },
+      __roomEditor: () => (roomEditor ? { value: roomEditor.value } : null),
+      __roomEditorCommit: (v) => { if (!roomEditor) return null; roomEditor.value = v; roomEditor.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })); return { name: (project.levels.flatMap((l) => l.rooms || []).find((r) => app.selection && r.id === app.selection.id) || {}).name || null, editing: !!roomEditor }; },
+      __roomEditorCancel: () => { if (!roomEditor) return false; roomEditor.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); return !roomEditor; },
       // multi-level (storey) seam handles — deterministic driving from the headless harness
       __levels: () => project.levels.map((l) => ({ id: l.id, name: l.name, elevation: l.elevation, height: l.height, walls: l.walls.length, hasRoof: !!l.roof })),
       __activeLevel: () => app.activeLevelId,
