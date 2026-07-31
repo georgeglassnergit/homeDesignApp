@@ -6,7 +6,7 @@ import { wallLength, polygonArea, polygonCentroid } from '../core/model.js';
 import { measureDistance } from '../edit/measure.js';
 import { formatLength, formatArea } from '../core/units.js';
 
-export function createPlanCanvas(canvas, { project, controller, planView, state, levelId, onSelect }) {
+export function createPlanCanvas(canvas, { project, controller, planView, state, levelId, onSelect, onRoomActivate }) {
   const ctx = canvas.getContext('2d');
   const notifySelect = () => { if (onSelect) onSelect(); };
   let activeLevelId = levelId;                    // retargetable so the plan follows the active storey
@@ -197,7 +197,15 @@ export function createPlanCanvas(canvas, { project, controller, planView, state,
   canvas.addEventListener('pointerdown', (e) => { canvas.setPointerCapture(e.pointerId); controller.pointerDown(worldAt(e)); draw(); notifySelect(); });
   canvas.addEventListener('pointermove', (e) => { controller.pointerMove(worldAt(e)); draw(); });
   canvas.addEventListener('pointerup', (e) => { controller.pointerUp(worldAt(e)); draw(); notifySelect(); });
-  canvas.addEventListener('dblclick', () => { controller.finishChain(); draw(); });
+  // Double-click ends a wall chain (as before). When the SELECT tool is active it is ALSO the
+  // plan-side entry to renaming a room: the wiring layer (main.js) resolves the room under the
+  // cursor and opens an inline name editor. finishChain() first keeps a mid-draw dbl-click from
+  // both ending the chain and opening an editor; onRoomActivate no-ops unless a room is hit.
+  canvas.addEventListener('dblclick', (e) => {
+    controller.finishChain();
+    if (onRoomActivate) onRoomActivate(worldAt(e));
+    draw();
+  });
   canvas.addEventListener('contextmenu', (e) => { e.preventDefault(); controller.finishChain(); draw(); });
 
   return { draw, resize, frameModel, setLevel };

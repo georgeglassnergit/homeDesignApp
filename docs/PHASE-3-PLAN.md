@@ -139,7 +139,7 @@ The rule that ends the #13/#14/#15 collisions. Before writing any code:
 
 | Slice | Status | PR / notes |
 |---|---|---|
-| A1 · Rename room via plan dblclick | todo | recommended next |
+| A1 · Rename room via plan dblclick | PR open (auto/2026-07-30) | plan-side entry to renameRoom; inline centroid label editor, Pro-gated. 18 pure + 16 headless checks |
 | A2 · Hover-highlight room on plan | todo | |
 | A3 · Wall/opening label (Pro) | todo | |
 | A4 · Auto room detection | todo | larger |
