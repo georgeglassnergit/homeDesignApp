@@ -141,7 +141,7 @@ The rule that ends the #13/#14/#15 collisions. Before writing any code:
 | Slice | Status | PR / notes |
 |---|---|---|
 | A1 · Rename room via plan dblclick | Landed (PR #20) | plan-side entry to renameRoom; inline centroid label editor, Pro-gated. 18 pure + 16 headless checks |
-| A2 · Hover-highlight room on plan | PR open (auto/2026-07-31) — headless BLOCKED | pure view state on pointer-move; warmer fill under cursor, no command/save. reuses `roomAtPoint`, gated to SELECT tool. 15 pure + 337/40/18/33 regression green. Headless render could NOT run this session — the env reaps every Chromium launch (see DEV-LOG 07-31); PR flagged so a headless pass can follow when the env permits |
+| A2 · Hover-highlight room on plan | PR open (auto/2026-07-31) — **headless VERIFIED, ready to merge** | pure view state on pointer-move; warmer fill under cursor, no command/save. reuses `roomAtPoint`, gated to SELECT tool. 15 pure + 337/40/18/33 regression green. **Headless: 12/12 PASS, zero console errors, screenshot `docs/verification/phase3-room-hover-plan.png` (2026-08-01)** — the 07-31 "reaping" was a launch-method problem (CLI/detached), fixed by the committed Playwright-CDP harness under `automation/headless-verify/` |
 | A3 · Wall/opening label (Pro) | todo | |
 | A4 · Auto room detection | todo | larger |
 | B1 · Gable-end wall infill | todo | open roof follow-up |
