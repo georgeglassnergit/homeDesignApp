@@ -745,6 +745,10 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       // plan-click selection (S1 select tool): drive a plan pointer-down at world {x,z} the same
       // way the canvas handler does, then return the resulting selection (room hit-test included).
       __planClick: (x, z) => { controller.pointerDown({ x, z }); plan.draw(); renderInspector(); updateStatus(); return app.selection; },
+      // A2: hover-highlight. Drive a plan pointer-move at world {x,z} (SELECT-tool only) and read
+      // back the hovered room + proof it's view-only (undo depth + selection unchanged, no rebuild).
+      __planHover: (x, z) => { plan.updateHover({ x, z }); plan.draw(); return { hover: plan.getHoveredId(), undo: history.undoStack.length, selection: app.selection }; },
+      __planHoverClear: () => { plan.clearHover(); plan.draw(); return plan.getHoveredId(); },
       // A1: plan double-click room rename. __planDblClick resolves+selects the room and (in Pro)
       // opens the inline editor; __roomEditor reports its live state; __roomEditorCommit drives a
       // real Enter through the editor's own handler so the headless harness exercises the DOM path.

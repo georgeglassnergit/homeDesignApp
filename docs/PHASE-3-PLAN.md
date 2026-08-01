@@ -40,6 +40,7 @@ Phase 3 is well underway — most momentum so far is in **rooms/measurement** an
 | Rooms | Whole-home GFA summary (inspector empty state) | 2026-07-25 | `core/model` `projectFloorArea`, inspector |
 | Rooms | Plan-click room selection (point-in-polygon) | 2026-07-27 (PR #17) | `core/model` `pointInPolygon`/`roomAtPoint`, `edit/tools` |
 | Rooms | Rename a room from the inspector (Pro `room-rename`) | 2026-07-28 (PR #18) | `edit/commands` `renameRoom`, inspector, `esc()` XSS-harden |
+| Rooms | Rename a room by double-clicking it on the plan (Pro) | 2026-07-30 (PR #20) | `app/planCanvas` dblclick, `main.js` inline centroid editor |
 
 **Still dormant** (registered in `FEATURE_TIERS` but *not* wired to any UI): `materials-swatch`, `code-checks`, `ifc-export`, `furnish-photo-3d`. **Still disabled** (shown as "coming soon" tiles in `main.js:602–603`): *Import a plan*, *Outsource*.
 
@@ -139,8 +140,8 @@ The rule that ends the #13/#14/#15 collisions. Before writing any code:
 
 | Slice | Status | PR / notes |
 |---|---|---|
-| A1 · Rename room via plan dblclick | PR open (auto/2026-07-30) | plan-side entry to renameRoom; inline centroid label editor, Pro-gated. 18 pure + 16 headless checks |
-| A2 · Hover-highlight room on plan | todo | |
+| A1 · Rename room via plan dblclick | Landed (PR #20) | plan-side entry to renameRoom; inline centroid label editor, Pro-gated. 18 pure + 16 headless checks |
+| A2 · Hover-highlight room on plan | PR open (auto/2026-07-31) — **headless VERIFIED, ready to merge** | pure view state on pointer-move; warmer fill under cursor, no command/save. reuses `roomAtPoint`, gated to SELECT tool. 15 pure + 337/40/18/33 regression green. **Headless: 12/12 PASS, zero console errors, screenshot `docs/verification/phase3-room-hover-plan.png` (2026-08-01)** — the 07-31 "reaping" was a launch-method problem (CLI/detached), fixed by the committed Playwright-CDP harness under `automation/headless-verify/` |
 | A3 · Wall/opening label (Pro) | todo | |
 | A4 · Auto room detection | todo | larger |
 | B1 · Gable-end wall infill | todo | open roof follow-up |

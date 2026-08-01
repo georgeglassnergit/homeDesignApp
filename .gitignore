@@ -3,7 +3,8 @@ vendor/
 dist/
 *.log
 .DS_Store
-# headless-verification vendored deps (cloned per run; never committed)
+# headless-verification vendored deps + build scaffold (regenerated per run; never committed)
 /three/
 /three-bvh-csg/
 /three-mesh-bvh/
+/verify.html

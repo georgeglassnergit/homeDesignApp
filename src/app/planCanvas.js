@@ -2,14 +2,27 @@
 // Draws the model with the Canvas 2D API and forwards pointer gestures to the
 // ToolController. Uses NO Three.js and stores NO geometry: it reads the plain
 // model + planView mapping, and every edit goes through the controller's commands.
-import { wallLength, polygonArea, polygonCentroid } from '../core/model.js';
+import { wallLength, polygonArea, polygonCentroid, roomAtPoint } from '../core/model.js';
 import { measureDistance } from '../edit/measure.js';
 import { formatLength, formatArea } from '../core/units.js';
+import { TOOL } from './state.js';
+
+// A2 — which room should read as "hovered" for a given plan point + active tool.
+// Pure resolution (no DOM, no model mutation, no command): a room only warms on hover while
+// the SELECT tool is active, so hovering never clutters wall-drawing / door-placing. Returns
+// the room id to highlight, or null. Exported so the hover rule is unit-testable without a
+// canvas — the pointer wiring below is the only impure part and just calls this + redraws.
+export function hoverRoomId(level, point, tool) {
+  if (tool !== TOOL.SELECT) return null;
+  const room = roomAtPoint(level, point);
+  return room ? room.id : null;
+}
 
 export function createPlanCanvas(canvas, { project, controller, planView, state, levelId, onSelect, onRoomActivate }) {
   const ctx = canvas.getContext('2d');
   const notifySelect = () => { if (onSelect) onSelect(); };
   let activeLevelId = levelId;                    // retargetable so the plan follows the active storey
+  let hoveredId = null;                           // A2: room under the plan cursor (view state — never saved)
   const level = () => project.levels.find((l) => l.id === activeLevelId) || project.levels[0];
   // Point the plan surface at a different storey (multi-level editing). The plan only ever
   // draws one level at a time — the storey the user is editing.
@@ -63,16 +76,19 @@ export function createPlanCanvas(canvas, { project, controller, planView, state,
     for (const room of lv.rooms || []) {
       if (!room.points || room.points.length < 3) continue;
       const selected = sel && sel.kind === 'room' && sel.id === room.id;
+      const hovered = !selected && hoveredId === room.id;   // A2: warm (but not selected) fill on hover
       ctx.beginPath();
       room.points.forEach((pt, i) => {
         const s = planView.worldToScreen(pt);
         i === 0 ? ctx.moveTo(s.px, s.py) : ctx.lineTo(s.px, s.py);
       });
       ctx.closePath();
-      ctx.fillStyle = selected ? 'rgba(197,106,44,.18)' : 'rgba(140,114,86,.10)';
+      ctx.fillStyle = selected ? 'rgba(197,106,44,.18)' : hovered ? 'rgba(197,106,44,.10)' : 'rgba(140,114,86,.10)';
       ctx.fill();
       if (selected) {
         ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(197,106,44,.55)'; ctx.stroke();
+      } else if (hovered) {
+        ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(197,106,44,.30)'; ctx.stroke();
       }
       // area label chip at the centroid
       const c = planView.worldToScreen(polygonCentroid(room.points));
@@ -82,7 +98,7 @@ export function createPlanCanvas(canvas, { project, controller, planView, state,
       const tw = ctx.measureText(label).width, pad = 4;
       ctx.fillStyle = 'rgba(255,255,255,.82)';
       ctx.fillRect(c.px - tw / 2 - pad, c.py - 8, tw + pad * 2, 16);
-      ctx.fillStyle = selected ? '#7a3d12' : '#6b5946';
+      ctx.fillStyle = selected ? '#7a3d12' : hovered ? '#8a5a2e' : '#6b5946';
       ctx.fillText(label, c.px, c.py);
     }
   }
@@ -189,14 +205,31 @@ export function createPlanCanvas(canvas, { project, controller, planView, state,
     ctx.restore();
   }
 
+  // A2: recompute which room the cursor is over (SELECT tool only). Pure view state — issues
+  // no command, mutates no model, touches no save. Returns true when the hover target changed
+  // so the caller can decide to redraw; callers here always redraw anyway (pointermove).
+  function updateHover(world) {
+    const id = hoverRoomId(level(), world, state.activeTool);
+    if (id === hoveredId) return false;
+    hoveredId = id;
+    return true;
+  }
+  function clearHover() {
+    if (hoveredId === null) return false;
+    hoveredId = null;
+    return true;
+  }
+
   // --- pointer wiring: DOM event -> world coords -> controller ---
   const worldAt = (e) => {
     const r = canvas.getBoundingClientRect();
     return planView.screenToWorld(e.clientX - r.left, e.clientY - r.top);
   };
   canvas.addEventListener('pointerdown', (e) => { canvas.setPointerCapture(e.pointerId); controller.pointerDown(worldAt(e)); draw(); notifySelect(); });
-  canvas.addEventListener('pointermove', (e) => { controller.pointerMove(worldAt(e)); draw(); });
+  canvas.addEventListener('pointermove', (e) => { const w = worldAt(e); updateHover(w); controller.pointerMove(w); draw(); });
   canvas.addEventListener('pointerup', (e) => { controller.pointerUp(worldAt(e)); draw(); notifySelect(); });
+  // Drop the hover highlight when the cursor leaves the plan so no room stays warm off-canvas.
+  canvas.addEventListener('pointerleave', () => { if (clearHover()) draw(); });
   // Double-click ends a wall chain (as before). When the SELECT tool is active it is ALSO the
   // plan-side entry to renaming a room: the wiring layer (main.js) resolves the room under the
   // cursor and opens an inline name editor. finishChain() first keeps a mid-draw dbl-click from
@@ -208,5 +241,9 @@ export function createPlanCanvas(canvas, { project, controller, planView, state,
   });
   canvas.addEventListener('contextmenu', (e) => { e.preventDefault(); controller.finishChain(); draw(); });
 
-  return { draw, resize, frameModel, setLevel };
+  return {
+    draw, resize, frameModel, setLevel,
+    // A2 hooks (also used by the headless harness): drive/read the hover highlight.
+    updateHover, clearHover, getHoveredId: () => hoveredId,
+  };
 }
