@@ -5,7 +5,7 @@ import { serialize, deserialize, validateProject, projectCounts, createLevel, cr
 import { createAppState, availableTools, isAvailable, MODE, TOOL, VIEW, CAMERA } from './app/state.js';
 import { cutawayHiddenWalls } from './viewer/cutaway.js';
 import { formatLength, UNIT } from './core/units.js';
-import { describeSelection, describeHomeSummary, buildDimensionEdit, buildRoomRename } from './app/inspector.js';
+import { describeSelection, describeHomeSummary, buildDimensionEdit, buildRoomRename, buildElementLabel } from './app/inspector.js';
 import { History } from './edit/history.js';
 import { ToolController } from './edit/tools.js';
 import { createPlanView } from './edit/planView.js';
@@ -152,6 +152,7 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       const nameRow = desc.rename
         ? `<label class="ins-row"><span>${desc.rename.label}</span>`
           + `<input class="ins-field ins-name" data-rename="1" value="${esc(desc.rename.value)}" `
+          + (desc.rename.placeholder ? `placeholder="${esc(desc.rename.placeholder)}" ` : '')
           + `maxlength="40" spellcheck="false" autocomplete="off"></label>`
         : '';
       const rows = desc.fields.map((f) => desc.editable
@@ -179,9 +180,34 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
             e.stopPropagation();   // keep Del/Ctrl-Z etc. from firing while typing the name
             if (e.key === 'Enter') { e.preventDefault(); nameInp.blur(); }
           });
-          nameInp.addEventListener('blur', () => commitRoomName(nameInp.value));
+          // The rename slot serves both the room-name edit and (A3) the wall/opening label edit;
+          // dispatch on the current selection so each commits through its own builder.
+          nameInp.addEventListener('blur', () => commitRename(nameInp.value));
         }
       }
+    }
+
+    // Dispatch a rename-slot commit to the right builder for the current selection: a room
+    // commits a name (non-empty, via commitRoomName), a wall/opening commits an optional label.
+    function commitRename(raw) {
+      if (app.selection && app.selection.kind === 'room') commitRoomName(raw);
+      else commitElementLabel(raw);
+    }
+
+    // Commit a wall/opening label edit through history (A3 Pro-seam). Like commitRoomName it is a
+    // pure metadata edit — it only writes/removes the element's optional `label`, never geometry —
+    // so no re-validate/rollback dance is needed. An unchanged value pushes nothing to undo.
+    function commitElementLabel(raw) {
+      if (committingField) return;   // re-render on commit blurs the input; don't loop
+      committingField = true;
+      try {
+        const res = buildElementLabel(project, app.selection, raw);
+        if (res.unchanged) return;
+        const msg = $('ins-msg');
+        if (res.error) { if (msg) msg.textContent = res.error; return; }
+        history.execute(res.command);
+        refresh();                   // re-render inspector title (now reflects the label)
+      } finally { committingField = false; }
     }
 
     // Commit a room-name edit through history (Pro-seam). A no-op (name unchanged) pushes nothing
@@ -735,6 +761,14 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
         commitRoomName(raw);
         const loc = describeSelection(project, app.selection, { mode: app.mode, units: app.units });
         return { title: loc ? loc.title : null, msg: $('ins-msg') ? $('ins-msg').textContent : '' };
+      },
+      // A3: label the selected wall/opening (Pro element-label). Commits through the same builder
+      // the inspector uses, then reports the resulting title (label or type name) + the element's
+      // stored label so the harness can prove the model updated and stays view/save-correct.
+      __labelElement: (raw) => {
+        commitElementLabel(raw);
+        const loc = describeSelection(project, app.selection, { mode: app.mode, units: app.units });
+        return { title: loc ? loc.title : null, rename: loc ? loc.rename : null, msg: $('ins-msg') ? $('ins-msg').textContent : '' };
       },
       __setMode: (m) => { app.setMode(m); syncModeButtons(); syncSnapSeam(); syncLevelSeam(); syncRoofSeam(); syncMeasureSeam(); renderInspector(); updateStatus(); },
       __setUnits: (u) => { app.setUnits(u); syncUnitButtons(); renderInspector(); },

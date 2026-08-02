@@ -289,6 +289,40 @@ export function renameRoom(levelId, roomId, name) {
   };
 }
 
+// Label a wall or opening (the A3 Pro-seam element-label edit). A wall/opening carries NO
+// `label` in the Phase 1 model, so this is the one place a save field is added — and it is
+// strictly OPTIONAL: setting an empty label deletes the key, so an unlabelled element (and
+// every old save) serializes exactly as before. Undo is byte-lossless in both directions —
+// it restores the prior string when there was one, and DELETES the key again when the element
+// had none (setting it to `undefined` would leak a `"label": undefined`-shaped diff and break
+// the round-trip, so we track whether the key existed and delete rather than assign). `kind`
+// selects the finder ('wall' | opening kinds like 'door'/'window' both live in level.openings).
+export function setElementLabel(levelId, kind, id, label) {
+  const findEl = (project) => {
+    const l = findLevel(project, levelId);
+    if (!l) return null;
+    return kind === 'wall' ? findWall(l, id) : findOpening(l, id);
+  };
+  let had = false, prev;
+  return {
+    name: kind === 'wall' ? 'Label wall' : 'Label opening',
+    do(project) {
+      const el = findEl(project);
+      if (!el) throw new Error(`setElementLabel: missing ${kind} ${id} on level ${levelId}`);
+      had = Object.prototype.hasOwnProperty.call(el, 'label');
+      prev = el.label;
+      if (label == null || label === '') delete el.label;
+      else el.label = label;
+    },
+    undo(project) {
+      const el = findEl(project);
+      if (!el) return;
+      if (had) el.label = prev;
+      else delete el.label;
+    },
+  };
+}
+
 // Set a storey's floor-to-floor height. Raising a lower storey pushes every storey above
 // it up (via stackElevations); the prior height and all elevations are captured for a
 // byte-lossless undo. The caller re-validates (height must be > 0) and rolls back on fail.

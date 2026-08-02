@@ -41,6 +41,7 @@ Phase 3 is well underway — most momentum so far is in **rooms/measurement** an
 | Rooms | Plan-click room selection (point-in-polygon) | 2026-07-27 (PR #17) | `core/model` `pointInPolygon`/`roomAtPoint`, `edit/tools` |
 | Rooms | Rename a room from the inspector (Pro `room-rename`) | 2026-07-28 (PR #18) | `edit/commands` `renameRoom`, inspector, `esc()` XSS-harden |
 | Rooms | Rename a room by double-clicking it on the plan (Pro) | 2026-07-30 (PR #20) | `app/planCanvas` dblclick, `main.js` inline centroid editor |
+| Rooms | Hover-highlight the room under the plan cursor (un-tiered view state) | 2026-08-01 (PR #21) | `app/planCanvas` `hoverRoomId`, `main.js` pointer wiring |
 
 **Still dormant** (registered in `FEATURE_TIERS` but *not* wired to any UI): `materials-swatch`, `code-checks`, `ifc-export`, `furnish-photo-3d`. **Still disabled** (shown as "coming soon" tiles in `main.js:602–603`): *Import a plan*, *Outsource*.
 
@@ -88,7 +89,7 @@ Most Phase 3 rows are already registered. Deltas as slices land:
 |---|---|---|---|---|
 | Rename room (plan dblclick) | A1 | — | ✅ | reuse `room-rename` |
 | Hover-highlight room | A2 | ✅ | ✅ | un-tiered (view state) |
-| Wall/opening label | A3 | — | ✅ | new row |
+| Wall/opening label | A3 | — | ✅ | `element-label` (Pro) |
 | Auto room detection | A4 | ✅ (read) | ✅ (name) | new row |
 | Gable infill / eaves | B1/B2 | — | ✅ | reuse `roof-editor` |
 | Angled / merged walls | C1/C2 | — | ✅ | reuse `draw-wall` + new Pro entry |
@@ -141,8 +142,8 @@ The rule that ends the #13/#14/#15 collisions. Before writing any code:
 | Slice | Status | PR / notes |
 |---|---|---|
 | A1 · Rename room via plan dblclick | Landed (PR #20) | plan-side entry to renameRoom; inline centroid label editor, Pro-gated. 18 pure + 16 headless checks |
-| A2 · Hover-highlight room on plan | PR open (auto/2026-07-31) — **headless VERIFIED, ready to merge** | pure view state on pointer-move; warmer fill under cursor, no command/save. reuses `roomAtPoint`, gated to SELECT tool. 15 pure + 337/40/18/33 regression green. **Headless: 12/12 PASS, zero console errors, screenshot `docs/verification/phase3-room-hover-plan.png` (2026-08-01)** — the 07-31 "reaping" was a launch-method problem (CLI/detached), fixed by the committed Playwright-CDP harness under `automation/headless-verify/` |
-| A3 · Wall/opening label (Pro) | todo | |
+| A2 · Hover-highlight room on plan | Landed (PR #21) | pure view state on pointer-move; warmer fill under cursor, no command/save. reuses `roomAtPoint`, gated to SELECT tool. Headless 12/12, screenshot `docs/verification/phase3-room-hover-plan.png`. Restored headless verification via the committed Playwright-CDP harness under `automation/headless-verify/` |
+| A3 · Wall/opening label (Pro) | PR open (auto/2026-08-02) — **headless VERIFIED** | new `element-label` tier; `setElementLabel` command + `buildElementLabel` builder; OPTIONAL `label` on wall/opening (empty clears the key → old saves byte-identical). inspector title reflects the label. 41 pure + 337/40/18/15/33 regression green. **Headless: 17/17 PASS, zero console errors, screenshot `docs/verification/phase3-element-label.png`** |
 | A4 · Auto room detection | todo | larger |
 | B1 · Gable-end wall infill | todo | open roof follow-up |
 | B2 · Per-slope eaves / overhang | todo | open roof follow-up |
