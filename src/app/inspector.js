@@ -9,11 +9,14 @@
 import { findWall, findOpening, findRoom, wallLength, polygonArea, polygonPerimeter, projectFloorArea } from '../core/model.js';
 import { isAvailable, MODE } from './state.js';
 import { formatLength, formatArea, parseLength, UNIT } from '../core/units.js';
-import { resizeWall, resizeOpening, renameRoom } from '../edit/commands.js';
+import { resizeWall, resizeOpening, renameRoom, setElementLabel } from '../edit/commands.js';
 
 // Longest room name we accept — long enough for "Master bedroom / ensuite", short enough that
 // the label never overruns the inspector or a plan-canvas chip. Enforced in buildRoomRename.
 export const MAX_ROOM_NAME = 40;
+// Longest wall/opening label we accept (A3). Same cap as a room name so the seam feels uniform
+// and no label can overrun the inspector title. Enforced in buildElementLabel.
+export const MAX_ELEMENT_LABEL = 40;
 
 // Locate the level + object a selection {kind,id} refers to, scanning every level so the
 // inspector works in multi-level projects (the model already supports them).
@@ -75,9 +78,13 @@ export function describeSelection(project, selection, { mode = MODE.SIMPLE, unit
   }
   const editable = isAvailable('exact-dimensions', mode);
   let title, fields;
+  // The element's default type name (used as the title when no label is set) and its current
+  // optional label. A wall/opening carries a `label` only once a Pro user names it (A3); the
+  // title shows the label when present so a named element reads by its name, exactly like a room.
+  let typeName;
   if (loc.kind === 'wall') {
     const w = loc.wall;
-    title = 'Wall';
+    typeName = 'Wall';
     fields = [
       { key: 'length',    label: 'Length',    meters: round(wallLength(w)) },
       { key: 'thickness', label: 'Thickness', meters: round(w.thickness) },
@@ -85,7 +92,7 @@ export function describeSelection(project, selection, { mode = MODE.SIMPLE, unit
     ];
   } else {
     const o = loc.opening;
-    title = o.kind === 'window' ? 'Window' : 'Door';
+    typeName = o.kind === 'window' ? 'Window' : 'Door';
     fields = [
       { key: 'width',  label: 'Width',  meters: round(o.width) },
       { key: 'height', label: 'Height', meters: round(o.height) },
@@ -93,8 +100,18 @@ export function describeSelection(project, selection, { mode = MODE.SIMPLE, unit
       { key: 'offset', label: 'Offset', meters: round(o.offset) },
     ];
   }
+  const el = loc.kind === 'wall' ? loc.wall : loc.opening;
+  const currentLabel = typeof el.label === 'string' ? el.label : '';
+  title = currentLabel || typeName;
   for (const f of fields) f.text = formatLength(f.meters, units);
-  return { title, type: loc.kind === 'wall' ? 'wall' : loc.opening.kind, id: selection.id, editable, fields };
+  // A wall/opening in Pro carries a `rename` slot — an optional free-text LABEL — mirroring the
+  // room-rename seam. It commits a setElementLabel command (not a parsed length), so it rides in
+  // the same `rename` slot the inspector already renders. Simple keeps the clean read-only card.
+  // Empty is allowed here (unlike a room name) because clearing the field removes the label.
+  const rename = isAvailable('element-label', mode)
+    ? { key: 'label', label: 'Label', value: currentLabel, placeholder: `Name this ${typeName.toLowerCase()} (optional)` }
+    : null;
+  return { title, type: loc.kind === 'wall' ? 'wall' : loc.opening.kind, id: selection.id, editable, rename, fields };
 }
 
 // Describe the whole-home floor-area summary shown when nothing is selected (the inspector's
@@ -163,4 +180,21 @@ export function buildRoomRename(project, selection, rawValue) {
   if (!name) return { error: 'Name can’t be empty' };
   if (name === loc.room.name) return { unchanged: true };
   return { command: renameRoom(loc.level.id, selection.id, name), name };
+}
+
+// Build the undoable command for a wall/opening label edit (the A3 Pro-seam element-label).
+// Mirrors buildRoomRename but for the OPTIONAL `label` field: an empty input is legal — it
+// clears the label (removing the key) — so this returns { command } for both set and clear,
+// { unchanged: true } when the trimmed input equals the element's current label (or both are
+// empty, so a blur that changed nothing pushes no history), and { error } only when the
+// selection isn't a wall/opening. The text is trimmed, whitespace-collapsed, and capped at
+// MAX_ELEMENT_LABEL so a label can't overrun the inspector title.
+export function buildElementLabel(project, selection, rawValue) {
+  const loc = locate(project, selection);
+  if (!loc || (loc.kind !== 'wall' && loc.kind !== 'opening')) return { error: 'Select a wall or opening to label' };
+  const el = loc.kind === 'wall' ? loc.wall : loc.opening;
+  const current = typeof el.label === 'string' ? el.label : '';
+  const label = String(rawValue ?? '').replace(/\s+/g, ' ').trim().slice(0, MAX_ELEMENT_LABEL);
+  if (label === current) return { unchanged: true };
+  return { command: setElementLabel(loc.level.id, loc.kind, selection.id, label), label };
 }
