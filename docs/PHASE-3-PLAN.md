@@ -143,9 +143,9 @@ The rule that ends the #13/#14/#15 collisions. Before writing any code:
 |---|---|---|
 | A1 · Rename room via plan dblclick | Landed (PR #20) | plan-side entry to renameRoom; inline centroid label editor, Pro-gated. 18 pure + 16 headless checks |
 | A2 · Hover-highlight room on plan | Landed (PR #21) | pure view state on pointer-move; warmer fill under cursor, no command/save. reuses `roomAtPoint`, gated to SELECT tool. Headless 12/12, screenshot `docs/verification/phase3-room-hover-plan.png`. Restored headless verification via the committed Playwright-CDP harness under `automation/headless-verify/` |
-| A3 · Wall/opening label (Pro) | PR open (auto/2026-08-02) — **headless VERIFIED** | new `element-label` tier; `setElementLabel` command + `buildElementLabel` builder; OPTIONAL `label` on wall/opening (empty clears the key → old saves byte-identical). inspector title reflects the label. 41 pure + 337/40/18/15/33 regression green. **Headless: 17/17 PASS, zero console errors, screenshot `docs/verification/phase3-element-label.png`** |
+| A3 · Wall/opening label (Pro) | Landed (PR #22) | new `element-label` tier; `setElementLabel` command + `buildElementLabel` builder; OPTIONAL `label` on wall/opening (empty clears the key → old saves byte-identical). inspector title reflects the label. 41 pure + 337/40/18/15/33 regression green. Headless 17/17, screenshot `docs/verification/phase3-element-label.png` |
 | A4 · Auto room detection | todo | larger |
-| B1 · Gable-end wall infill | todo | open roof follow-up |
+| B1 · Gable-end wall infill | PR open (auto/2026-08-03) — **headless VERIFIED** | pure `gableInfill` + `wallBounds` in `core/roofShape.js` (wall-plane triangular prisms rising to the ridge, wall material) + `buildGableInfillMesh` view mesh, wired in `sceneBuilder`; roof shell untouched (additive, zero-risk). No new save field (derived geometry). 25 pure + 337/40/41/33 regression green. **Headless 14/14, zero console errors, screenshot `docs/verification/phase3-gable-infill.png`** |
 | B2 · Per-slope eaves / overhang | todo | open roof follow-up |
 | C1 · Angled walls | todo | CSG-sensitive |
 | C2 · Merged / T-junction walls | todo | CSG-sensitive; do last |

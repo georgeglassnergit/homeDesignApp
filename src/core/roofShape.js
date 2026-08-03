@@ -18,6 +18,10 @@ export const DEFAULT_ROOF_PITCH = 30; // degrees from horizontal
 export const RIDGE_MODES = ['auto', 'x', 'z'];
 export const DEFAULT_RIDGE = 'auto';
 
+// Fallback depth (m) for a gable-end infill panel when the caller supplies none.
+// Matches the model's default wall thickness so a lone gable reads as wall, not paper.
+export const DEFAULT_INFILL_THICKNESS = 0.12;
+
 export function isPitched(type) {
   return type === 'gable' || type === 'hip';
 }
@@ -35,9 +39,9 @@ export function resolveRidgeAlongX(footprint, ridge = DEFAULT_RIDGE) {
   return W >= D;
 }
 
-// Axis-aligned footprint of a level's walls, expanded by the roof overhang.
-// Returns null when the level has no walls (nothing to cover).
-export function roofFootprint(level) {
+// Bare axis-aligned bounding box of a level's walls (NO overhang) — the wall plane
+// itself. Returns null when the level has no walls.
+export function wallBounds(level) {
   const walls = (level && level.walls) || [];
   if (!walls.length) return null;
   let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
@@ -45,8 +49,16 @@ export function roofFootprint(level) {
     x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x);
     z0 = Math.min(z0, p.z); z1 = Math.max(z1, p.z);
   }
+  return { x0, x1, z0, z1 };
+}
+
+// Axis-aligned footprint of a level's walls, expanded by the roof overhang.
+// Returns null when the level has no walls (nothing to cover).
+export function roofFootprint(level) {
+  const b = wallBounds(level);
+  if (!b) return null;
   const o = (level.roof && level.roof.overhang) || 0;
-  return { x0: x0 - o, x1: x1 + o, z0: z0 - o, z1: z1 + o };
+  return { x0: b.x0 - o, x1: b.x1 + o, z0: b.z0 - o, z1: b.z1 + o };
 }
 
 // Vertical rise (m) for a horizontal run (m) at a given pitch (degrees).
@@ -160,4 +172,71 @@ export function roofSolid(type, footprint, { baseY = 0, pitch = DEFAULT_ROOF_PIT
   quad(raw, c00, c10, c11, c01);
 
   return { ...finalize(raw, center), ridgeY: hR, ridgeAlongX, apex };
+}
+
+// Two triangular gable-end WALL panels — the wall infill under a gable roof.
+//
+// A gable leaves a triangle of open wall between the top of the (rectangular)
+// walls and the two rising roof slopes at each end perpendicular to the ridge.
+// In reality that triangle is wall (siding/brick), not roof and not void. This
+// returns thin solid prisms — one per gable end — sitting on the WALL plane
+// (inset from the roof's overhang), rising from eave height to the ridge, so the
+// end reads as wall. The roof shell built by roofSolid() is left untouched: it
+// keeps its own closing gable triangle at the overhang plane, which now reads as
+// the rake overhang above/around this wall infill.
+//
+// Only 'gable' produces panels — 'hip'/'flat' have no gable end (empty result).
+//   roofFp    — the roof (overhang-expanded) footprint; fixes ridge orientation &
+//               height so each panel apex meets the ACTUAL roof ridge.
+//   wallFp    — the bare wall bounding box (from wallBounds); fixes the panel base.
+//   baseY     — eave height (top of the walls)
+//   pitch     — roof slope in degrees (same value the roof uses)
+//   ridge     — 'auto'|'x'|'z', resolved against roofFp exactly like roofSolid
+//   thickness — panel depth (wall thickness), centred on the wall plane
+// Returns { positions (9/tri, non-indexed, outward-facing), triangleCount,
+//           ridgeAlongX, ridgeY }.
+export function gableInfill(type, roofFp, wallFp, { baseY = 0, pitch = DEFAULT_ROOF_PITCH, ridge = DEFAULT_RIDGE, thickness = DEFAULT_INFILL_THICKNESS } = {}) {
+  const ridgeAlongX = resolveRidgeAlongX(roofFp, ridge);
+  // Ridge height matches the roof: rise over half the footprint span PERPENDICULAR
+  // to the ridge (the overhang-expanded span, so the apex reaches the real ridge).
+  const shortHalf = (ridgeAlongX ? (roofFp.z1 - roofFp.z0) : (roofFp.x1 - roofFp.x0)) / 2;
+  const ridgeY = baseY + pitchRise(shortHalf, pitch);
+  if (type !== 'gable' || !wallFp) return { positions: [], triangleCount: 0, ridgeAlongX, ridgeY };
+
+  const { x0: wx0, x1: wx1, z0: wz0, z1: wz1 } = wallFp;
+  const h = thickness / 2;
+  const positions = [];
+  let triangleCount = 0;
+
+  // A thin triangular prism from a 3-vertex profile, extruded by ±h along `axis`.
+  // finalize() orients its faces outward using the prism's own centroid (convex).
+  const addPanel = (profile, axis) => {
+    const e = axis === 'x' ? [h, 0, 0] : [0, 0, h];
+    const front = profile.map((p) => [p[0] + e[0], p[1] + e[1], p[2] + e[2]]);
+    const back = profile.map((p) => [p[0] - e[0], p[1] - e[1], p[2] - e[2]]);
+    const raw = [];
+    tri(raw, front[0], front[1], front[2]);        // near cap
+    tri(raw, back[0], back[1], back[2]);           // far cap
+    for (let i = 0; i < 3; i++) {                  // 3 side quads join the caps
+      const j = (i + 1) % 3;
+      quad(raw, front[i], front[j], back[j], back[i]);
+    }
+    let cx = 0, cy = 0, cz = 0;
+    for (let i = 0; i < raw.length; i += 3) { cx += raw[i]; cy += raw[i + 1]; cz += raw[i + 2]; }
+    const n = raw.length / 3;
+    const fin = finalize(raw, [cx / n, cy / n, cz / n]);
+    positions.push(...fin.positions);
+    triangleCount += fin.triangleCount;
+  };
+
+  if (ridgeAlongX) {
+    const zc = (wz0 + wz1) / 2;                    // == roof ridge z (symmetric overhang)
+    addPanel([[wx0, baseY, wz0], [wx0, baseY, wz1], [wx0, ridgeY, zc]], 'x'); // end at x0
+    addPanel([[wx1, baseY, wz0], [wx1, baseY, wz1], [wx1, ridgeY, zc]], 'x'); // end at x1
+  } else {
+    const xc = (wx0 + wx1) / 2;
+    addPanel([[wx0, baseY, wz0], [wx1, baseY, wz0], [xc, ridgeY, wz0]], 'z'); // end at z0
+    addPanel([[wx0, baseY, wz1], [wx1, baseY, wz1], [xc, ridgeY, wz1]], 'z'); // end at z1
+  }
+  return { positions, triangleCount, ridgeAlongX, ridgeY };
 }

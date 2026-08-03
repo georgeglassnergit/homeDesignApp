@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { Brush, Evaluator, SUBTRACTION } from 'three-bvh-csg';
 import { wallLength } from '../core/model.js';
-import { roofFootprint, roofSolid, isPitched, DEFAULT_ROOF_PITCH } from '../core/roofShape.js';
+import { roofFootprint, wallBounds, roofSolid, gableInfill, isPitched, DEFAULT_ROOF_PITCH } from '../core/roofShape.js';
+import { DEFAULTS } from '../core/model.js';
 
 const _eval = new Evaluator();
 
@@ -88,6 +89,32 @@ export function buildRoofMesh(level, material) {
   slab.castShadow = true;
   slab.userData.kind = 'roof';
   return slab;
+}
+
+// Gable-end WALL infill — the triangular wall panels that fill the void between
+// the top of the walls and the roof slopes at a gable's ends. Returns a single
+// mesh (both end panels) in the WALL material, or null when the level has no
+// gable roof / no walls. Additive only: the roof mesh (buildRoofMesh) is unchanged.
+export function buildGableInfillMesh(level, material) {
+  if (!level.walls.length || !level.roof || level.roof.type !== 'gable') return null;
+  const roofFp = roofFootprint(level);
+  const wallFp = wallBounds(level);
+  if (!roofFp || !wallFp) return null;
+  const baseY = level.elevation + level.height;
+  const pitch = level.roof.pitch ?? DEFAULT_ROOF_PITCH;
+  const ridge = level.roof.ridge ?? 'auto';
+  // Match the panel depth to the walls so the gable reads as a continuation of them.
+  const thickness = level.walls[0]?.thickness ?? DEFAULTS.wall.thickness;
+  const { positions } = gableInfill('gable', roofFp, wallFp, { baseY, pitch, ridge, thickness });
+  if (!positions.length) return null;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.computeVertexNormals();
+  const mesh = new THREE.Mesh(geo, material);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  mesh.userData.kind = 'wall';
+  return mesh;
 }
 
 // Ground plane for the site/lot.

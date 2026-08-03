@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { makeMaterialRegistry } from './materials.js';
-import { buildWallMesh, buildFloorMesh, buildRoofMesh, buildGroundMesh } from './geometry.js';
+import { buildWallMesh, buildFloorMesh, buildRoofMesh, buildGableInfillMesh, buildGroundMesh } from './geometry.js';
 import { loadFurniture } from './furniture.js';
 
 // Generated-geometry kinds (walls/floors/roof/ground). Furniture is loaded async and
@@ -23,7 +23,12 @@ export function buildGeometry(project) {
       meshes.push(buildWallMesh(wall, ops, level.elevation, pick(wall.material)));
     }
     for (const room of level.rooms) meshes.push(buildFloorMesh(room, level.elevation, pick(room.material)));
-    if (level.roof) { const r = buildRoofMesh(level, pick(level.roof.material)); if (r) meshes.push(r); }
+    if (level.roof) {
+      const r = buildRoofMesh(level, pick(level.roof.material)); if (r) meshes.push(r);
+      // A gable roof gets triangular wall infill at its ends (reads as wall, not void).
+      const wallMat = pick(level.walls[0]?.material || 'wall');
+      const g = buildGableInfillMesh(level, wallMat); if (g) meshes.push(g);
+    }
   }
   return meshes;
 }
