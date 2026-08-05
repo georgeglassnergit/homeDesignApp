@@ -213,7 +213,7 @@
       }
       #roof-panel .rp-ridge button.active { background: #6b5b4b; color: #fff; border-color: #6b5b4b; }
       #roof-panel .rp-ridge button:disabled { opacity: .4; cursor: default; }
-      #roof-ridge-row.hidden { display: none; }
+      #roof-ridge-row.hidden, #roof-eave-row.hidden, #roof-rake-row.hidden { display: none; }
       #roof-panel .rp-row { display: flex; align-items: center; gap: 8px; margin: 7px 0; }
       #roof-panel .rp-row label { flex: 0 0 auto; }
       #roof-panel input[type=range] { flex: 1; accent-color: #6b5b4b; cursor: pointer; }
@@ -335,7 +335,17 @@
           <button data-ridge="z" title="Ridge runs front–back (along Z)">↕</button>
         </div>
       </div>
-      <div class="rp-hint">Gable and hip roofs rise from the top storey's walls. Pitch is the slope; ridge is which way the peak runs (Auto = the longer wall). Approximate visualization, not a framing spec.</div>
+      <div class="rp-row" id="roof-eave-row">
+        <label for="roof-eave" title="Overhang at the eaves — the two sloped sides, perpendicular to the ridge">Eaves</label>
+        <input id="roof-eave" type="range" min="0" max="100" step="5" value="30">
+        <span class="rp-val" id="roof-eave-val">30</span>
+      </div>
+      <div class="rp-row" id="roof-rake-row">
+        <label for="roof-rake" title="Overhang at the rakes — the gable/hip ends, along the ridge">Rake</label>
+        <input id="roof-rake" type="range" min="0" max="100" step="5" value="30">
+        <span class="rp-val" id="roof-rake-val">30</span>
+      </div>
+      <div class="rp-hint">Gable and hip roofs rise from the top storey's walls. Pitch is the slope; ridge is which way the peak runs (Auto = the longer wall). Eaves and rake set how far the roof oversails the walls (cm) on the sloped sides and the ends. Approximate visualization, not a framing spec.</div>
     </div>
     <div id="picker" aria-modal="true" role="dialog" aria-label="Choose a template">
       <div id="picker-card">

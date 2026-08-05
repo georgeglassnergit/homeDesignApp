@@ -2,6 +2,7 @@ import { createViewer } from './viewer/viewer.js';
 import { createWalkController } from './viewer/walkCamera.js';
 import { buildScene, sceneBounds, rebuildGeometry } from './build/sceneBuilder.js';
 import { serialize, deserialize, validateProject, projectCounts, createLevel, createRoof, findLevel, roomAtPoint, polygonCentroid } from './core/model.js';
+import { roofOverhangs } from './core/roofShape.js';
 import { createAppState, availableTools, isAvailable, MODE, TOOL, VIEW, CAMERA } from './app/state.js';
 import { cutawayHiddenWalls } from './viewer/cutaway.js';
 import { formatLength, UNIT } from './core/units.js';
@@ -497,6 +498,10 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
     const roofTypeButtons = [...document.querySelectorAll('#roof-types button')];
     const roofRidgeRow = $('roof-ridge-row');
     const roofRidgeButtons = [...document.querySelectorAll('#roof-ridges button')];
+    // B2 per-slope overhangs — sliders read/write in centimetres; the model stores metres.
+    const roofEaveRow = $('roof-eave-row'), roofEaveInp = $('roof-eave'), roofEaveVal = $('roof-eave-val');
+    const roofRakeRow = $('roof-rake-row'), roofRakeInp = $('roof-rake'), roofRakeVal = $('roof-rake-val');
+    const cm = (m) => Math.round(m * 100);            // metres → whole cm (for the sliders)
 
     // The roof caps the TOP storey (multi-level moves it up as storeys stack).
     function roofBearingLevel() {
@@ -524,6 +529,15 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       // Ridge direction only means something for a pitched roof — show/enable it only then.
       if (roofRidgeRow) roofRidgeRow.classList.toggle('hidden', !pitched);
       roofRidgeButtons.forEach((b) => { b.classList.toggle('active', b.dataset.ridge === ridge); b.disabled = !pitched; });
+      // Per-slope overhangs are a pitched-roof concept too (a flat slab keeps its uniform
+      // overhang). Show the effective eave/rake — backfilled from the legacy `overhang`.
+      const { eave, rake } = roofOverhangs(roof || {});
+      if (roofEaveRow) roofEaveRow.classList.toggle('hidden', !pitched);
+      if (roofRakeRow) roofRakeRow.classList.toggle('hidden', !pitched);
+      if (roofEaveInp) { roofEaveInp.value = cm(eave); roofEaveInp.disabled = !pitched; }
+      if (roofEaveVal) roofEaveVal.textContent = pitched ? `${cm(eave)}` : '—';
+      if (roofRakeInp) { roofRakeInp.value = cm(rake); roofRakeInp.disabled = !pitched; }
+      if (roofRakeVal) roofRakeVal.textContent = pitched ? `${cm(rake)}` : '—';
       roofBtn.classList.toggle('armed', pitched);
       roofBtn.disabled = !roof;
     }
@@ -534,6 +548,16 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       roofPitchInp.addEventListener('keydown', (e) => e.stopPropagation());
       roofPitchInp.addEventListener('input', () => { if (roofPitchVal) roofPitchVal.textContent = `${roofPitchInp.value}°`; });
       roofPitchInp.addEventListener('change', () => applyRoof({ pitch: parseFloat(roofPitchInp.value) }));
+    }
+    if (roofEaveInp) {
+      roofEaveInp.addEventListener('keydown', (e) => e.stopPropagation());
+      roofEaveInp.addEventListener('input', () => { if (roofEaveVal) roofEaveVal.textContent = roofEaveInp.value; });
+      roofEaveInp.addEventListener('change', () => applyRoof({ eaveOverhang: parseInt(roofEaveInp.value, 10) / 100 }));
+    }
+    if (roofRakeInp) {
+      roofRakeInp.addEventListener('keydown', (e) => e.stopPropagation());
+      roofRakeInp.addEventListener('input', () => { if (roofRakeVal) roofRakeVal.textContent = roofRakeInp.value; });
+      roofRakeInp.addEventListener('change', () => applyRoof({ rakeOverhang: parseInt(roofRakeInp.value, 10) / 100 }));
     }
     function positionRoofPanel() {
       const r = roofBtn.getBoundingClientRect();
@@ -800,8 +824,8 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       __setLevelHeight: (id, h) => { commitLevelHeight(id, String(h)); return project.levels.find((l) => l.id === id)?.height; },
       __renameLevel: (id, name) => { commitLevelName(id, name); return project.levels.find((l) => l.id === id)?.name; },
       // roof-editor (gable/hip) seam handles — deterministic driving from the headless harness
-      __roof: () => { const r = (roofBearingLevel() || {}).roof; return r ? { levelId: roofBearingLevel().id, type: r.type, pitch: r.pitch, ridge: r.ridge } : null; },
-      __setRoofType: (patch) => { applyRoof(patch); const r = (roofBearingLevel() || {}).roof; return r ? { type: r.type, pitch: r.pitch, ridge: r.ridge } : null; },
+      __roof: () => { const r = (roofBearingLevel() || {}).roof; return r ? { levelId: roofBearingLevel().id, type: r.type, pitch: r.pitch, ridge: r.ridge, overhang: r.overhang, eaveOverhang: r.eaveOverhang, rakeOverhang: r.rakeOverhang } : null; },
+      __setRoofType: (patch) => { applyRoof(patch); const r = (roofBearingLevel() || {}).roof; return r ? { type: r.type, pitch: r.pitch, ridge: r.ridge, overhang: r.overhang, eaveOverhang: r.eaveOverhang, rakeOverhang: r.rakeOverhang } : null; },
       __roofSeamVisible: () => roofGroup.classList.contains('on'),
       // measure-tool (Pro-seam ruler) handles — deterministic driving from the headless harness
       __setTool: (t) => { controller.setTool(t); syncToolButtons(); hint(HINTS[app.activeTool] || ''); plan.draw(); return app.activeTool; },

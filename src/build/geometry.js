@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { Brush, Evaluator, SUBTRACTION } from 'three-bvh-csg';
 import { wallLength } from '../core/model.js';
-import { roofFootprint, wallBounds, roofSolid, gableInfill, isPitched, DEFAULT_ROOF_PITCH } from '../core/roofShape.js';
+import { roofFootprint, wallBounds, roofSolid, gableInfill, isPitched, resolveRidgeAlongX, DEFAULT_ROOF_PITCH } from '../core/roofShape.js';
 import { DEFAULTS } from '../core/model.js';
 
 const _eval = new Evaluator();
@@ -64,8 +64,10 @@ export function buildRoofMesh(level, material) {
     if (!fp) return null;
     const baseY = level.elevation + level.height;
     const pitch = level.roof.pitch ?? DEFAULT_ROOF_PITCH;
-    const ridge = level.roof.ridge ?? 'auto';
-    const { positions } = roofSolid(type, fp, { baseY, pitch, ridge });
+    // Resolve the ridge axis from the bare WALL bounds — the same basis roofFootprint used —
+    // and pass a CONCRETE ridge so the per-slope (eave≠rake) footprint and the shell agree.
+    const ridgeAlongX = resolveRidgeAlongX(wallBounds(level), level.roof.ridge ?? 'auto');
+    const { positions } = roofSolid(type, fp, { baseY, pitch, ridge: ridgeAlongX ? 'x' : 'z' });
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
     geo.computeVertexNormals();
@@ -102,10 +104,12 @@ export function buildGableInfillMesh(level, material) {
   if (!roofFp || !wallFp) return null;
   const baseY = level.elevation + level.height;
   const pitch = level.roof.pitch ?? DEFAULT_ROOF_PITCH;
-  const ridge = level.roof.ridge ?? 'auto';
+  // Concrete ridge from the wall bounds (matches roofFootprint) so the panel apex meets
+  // the real ridge even when the eave/rake overhangs differ (B2).
+  const ridgeAlongX = resolveRidgeAlongX(wallFp, level.roof.ridge ?? 'auto');
   // Match the panel depth to the walls so the gable reads as a continuation of them.
   const thickness = level.walls[0]?.thickness ?? DEFAULTS.wall.thickness;
-  const { positions } = gableInfill('gable', roofFp, wallFp, { baseY, pitch, ridge, thickness });
+  const { positions } = gableInfill('gable', roofFp, wallFp, { baseY, pitch, ridge: ridgeAlongX ? 'x' : 'z', thickness });
   if (!positions.length) return null;
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));

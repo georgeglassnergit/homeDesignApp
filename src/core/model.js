@@ -93,7 +93,7 @@ export function createRoom(points, opts = {}) {
 }
 
 export function createRoof(opts = {}) {
-  return {
+  const roof = {
     type: opts.type || DEFAULTS.roof.type,     // 'flat' | 'gable' | 'hip' (see core/roofShape.js)
     thickness: opts.thickness ?? DEFAULTS.roof.thickness,
     overhang: opts.overhang ?? DEFAULTS.roof.overhang,
@@ -101,6 +101,12 @@ export function createRoof(opts = {}) {
     ridge: opts.ridge || DEFAULTS.roof.ridge,  // 'auto'|'x'|'z' ridge orientation; only affects gable/hip
     material: opts.material || 'roof',
   };
+  // Per-slope overhangs (B2) are OPTIONAL: eave (sloped sides) vs. rake (gable/hip ends).
+  // Only carried when explicitly set, so a roof that never customises them serializes
+  // byte-identically to a pre-B2 save. Absent → both fall back to `overhang` (roofOverhangs).
+  if (opts.eaveOverhang != null) roof.eaveOverhang = opts.eaveOverhang;
+  if (opts.rakeOverhang != null) roof.rakeOverhang = opts.rakeOverhang;
+  return roof;
 }
 
 export function createFurniture(src, opts = {}) {
@@ -303,6 +309,12 @@ export function validateProject(project) {
       if (!ROOF_TYPES.includes(lvl.roof.type)) errors.push(`level ${lvl.id}: unknown roof type ${lvl.roof.type}`);
       if (isPitched(lvl.roof.type) && !(lvl.roof.pitch > 0 && lvl.roof.pitch < 90)) errors.push(`level ${lvl.id}: roof pitch must be between 0 and 90 degrees`);
       if (lvl.roof.ridge != null && !RIDGE_MODES.includes(lvl.roof.ridge)) errors.push(`level ${lvl.id}: unknown roof ridge ${lvl.roof.ridge}`);
+      // Overhangs (uniform `overhang`, plus the optional per-slope B2 eave/rake) must be
+      // finite and non-negative when present. Absent per-slope fields are fine (old saves).
+      for (const k of ['overhang', 'eaveOverhang', 'rakeOverhang']) {
+        const v = lvl.roof[k];
+        if (v != null && !(Number.isFinite(v) && v >= 0)) errors.push(`level ${lvl.id}: roof ${k} must be a non-negative number`);
+      }
     }
   }
   return { ok: errors.length === 0, errors };

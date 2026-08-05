@@ -222,12 +222,16 @@ export function setLevelRoof(levelId, roof) {
   };
 }
 
-// Change a storey roof's shape (flat / gable / hip) and/or pitch. The prior roof
-// is captured whole for a byte-lossless undo (the Phase 1 guarantee). Only the
-// roof's `type`/`pitch`/`ridge` fields change — thickness, overhang and material carry
-// through untouched. Missing pitch is backfilled to the default so a roof that
-// pre-dates the pitch field renders a sane slope once switched to gable/hip.
-export function setRoofType(levelId, { type, pitch, ridge } = {}) {
+// Change a storey roof's shape (flat / gable / hip), pitch, ridge, and/or overhang.
+// The prior roof is captured whole for a byte-lossless undo (the Phase 1 guarantee):
+// undo restores the ORIGINAL roof object, so any per-slope field this command adds is
+// cleanly discarded — an old save that never had eave/rake round-trips unchanged.
+// Fields not named in the patch carry through untouched. Missing pitch is backfilled to
+// the default so a roof that pre-dates the pitch field renders a sane slope once pitched.
+//   overhang     — the uniform overhang (also the fallback for the two below)
+//   eaveOverhang — B2: overhang at the eaves (sloped sides); OPTIONAL, per-slope
+//   rakeOverhang — B2: overhang at the rakes (gable/hip ends); OPTIONAL, per-slope
+export function setRoofType(levelId, { type, pitch, ridge, overhang, eaveOverhang, rakeOverhang } = {}) {
   let prev;
   return {
     name: 'Set roof type',
@@ -239,6 +243,9 @@ export function setRoofType(levelId, { type, pitch, ridge } = {}) {
       if (type !== undefined) l.roof.type = type;
       if (pitch !== undefined) l.roof.pitch = pitch;
       if (ridge !== undefined) l.roof.ridge = ridge;
+      if (overhang !== undefined) l.roof.overhang = overhang;
+      if (eaveOverhang !== undefined) l.roof.eaveOverhang = eaveOverhang;
+      if (rakeOverhang !== undefined) l.roof.rakeOverhang = rakeOverhang;
       if (l.roof.pitch === undefined) l.roof.pitch = DEFAULT_ROOF_PITCH;
     },
     undo(project) {
