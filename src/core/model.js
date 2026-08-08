@@ -125,6 +125,45 @@ export function defaultMaterials() {
   };
 }
 
+// ---- E1 · materials library (activate the `materials-swatch` seam) ----------
+// A small, curated palette of surface finishes the user can apply to a wall or floor
+// from the inspector. This is PURE data (id, human label, plus the same color/roughness/
+// metalness shape `makeMaterialRegistry` already consumes) — no Three.js here; the view
+// layer turns a chosen id into a real material via the existing registry, unchanged.
+//
+// A finish is applied by `setElementMaterial` (edit/commands.js): the command points the
+// element's existing `material` key at the chosen id and, if that id isn't already in the
+// project's `materials` map, registers its definition there so the registry can resolve it.
+// Because the finish is stored under the element's ALREADY-EXISTING `material` field and any
+// added preset is removed again on undo, no new save field is introduced and old saves stay
+// byte-identical (the Phase 1 lossless contract holds — proven in the pure suite).
+export const MATERIAL_LIBRARY = Object.freeze([
+  { id: 'warm-white', label: 'Warm white', color: '#f3ece1', roughness: 0.90 },
+  { id: 'soft-grey',  label: 'Soft grey',  color: '#d8d6d1', roughness: 0.90 },
+  { id: 'oak',        label: 'Oak',        color: '#b9a58c', roughness: 0.95 },
+  { id: 'walnut',     label: 'Walnut',     color: '#6b4a32', roughness: 0.90 },
+  { id: 'red-brick',  label: 'Red brick',  color: '#a6512f', roughness: 0.95 },
+  { id: 'concrete',   label: 'Concrete',   color: '#9a9791', roughness: 0.85 },
+  { id: 'slate',      label: 'Slate',      color: '#5b5f66', roughness: 0.80 },
+  { id: 'sage',       label: 'Sage green', color: '#8a9a7b', roughness: 0.90 },
+  { id: 'deep-navy',  label: 'Deep navy',  color: '#3a4a63', roughness: 0.85 },
+  { id: 'terracotta', label: 'Terracotta', color: '#c06a44', roughness: 0.90 },
+].map(Object.freeze));
+
+const MATERIAL_LIBRARY_BY_ID = new Map(MATERIAL_LIBRARY.map((m) => [m.id, m]));
+
+// The library definition for an id, or null if it isn't a known finish. The returned object
+// is the frozen catalog entry (id + label + color/roughness); callers that register it into a
+// project's `materials` map should copy the render fields, not the id/label.
+export function materialDef(id) {
+  return MATERIAL_LIBRARY_BY_ID.get(id) || null;
+}
+
+// Is `id` a finish in the library? (Cheap membership test for the edit builder.)
+export function isLibraryMaterial(id) {
+  return MATERIAL_LIBRARY_BY_ID.has(id);
+}
+
 // ---- geometry helpers on the data (still no Three.js) ----------------------
 
 export function wallLength(wall) {

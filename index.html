@@ -74,6 +74,16 @@
       #inspector .ins-name { width: 150px; text-align: left; font-variant-numeric: normal; }
       #inspector .ins-hint { color: #8a7c6c; font-size: 10.5px; margin-top: 7px; line-height: 1.35; }
       #inspector .ins-msg { color: #c62828; font-size: 11px; margin-top: 4px; min-height: 1px; }
+      /* E1 materials swatch row */
+      #inspector .ins-mat { align-items: flex-start; }
+      #inspector .ins-swatches { display: flex; flex-wrap: wrap; gap: 5px; max-width: 156px; justify-content: flex-end; }
+      #inspector .ins-swatch {
+        width: 20px; height: 20px; padding: 0; border-radius: 4px; cursor: pointer;
+        background: var(--sw, #ccc); border: 1px solid rgba(0,0,0,0.28); box-shadow: 0 1px 1px rgba(0,0,0,0.12);
+      }
+      #inspector .ins-swatch:hover { transform: scale(1.08); }
+      #inspector .ins-swatch:focus-visible { outline: 2px solid #6b5b4b; outline-offset: 1px; }
+      #inspector .ins-swatch.sel { outline: 2px solid #6b5b4b; outline-offset: 1px; border-color: #4a3f33; }
 
       /* S4 start-screen template picker — a full-panel overlay shown on boot and
          reopenable from the toolbar. Picking a card instantiates a starter Project. */
