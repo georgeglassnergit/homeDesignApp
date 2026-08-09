@@ -145,7 +145,7 @@ The rule that ends the #13/#14/#15 collisions. Before writing any code:
 | A2 · Hover-highlight room on plan | Landed (PR #21) | pure view state on pointer-move; warmer fill under cursor, no command/save. reuses `roomAtPoint`, gated to SELECT tool. Headless 12/12, screenshot `docs/verification/phase3-room-hover-plan.png`. Restored headless verification via the committed Playwright-CDP harness under `automation/headless-verify/` |
 | A3 · Wall/opening label (Pro) | Landed (PR #22) | new `element-label` tier; `setElementLabel` command + `buildElementLabel` builder; OPTIONAL `label` on wall/opening (empty clears the key → old saves byte-identical). inspector title reflects the label. 41 pure + 337/40/18/15/33 regression green. Headless 17/17, screenshot `docs/verification/phase3-element-label.png` |
 | A4 · Auto room detection | todo | larger |
-| B1 · Gable-end wall infill | PR open (auto/2026-08-03) — **headless VERIFIED** | pure `gableInfill` + `wallBounds` in `core/roofShape.js` (wall-plane triangular prisms rising to the ridge, wall material) + `buildGableInfillMesh` view mesh, wired in `sceneBuilder`; roof shell untouched (additive, zero-risk). No new save field (derived geometry). 25 pure + 337/40/41/33 regression green. **Headless 14/14, zero console errors, screenshot `docs/verification/phase3-gable-infill.png`** |
+| B1 · Gable-end wall infill | Landed (PR #23) | pure `gableInfill` + `wallBounds` in `core/roofShape.js` (wall-plane triangular prisms rising to the ridge, wall material) + `buildGableInfillMesh` view mesh, wired in `sceneBuilder`; roof shell untouched (additive, zero-risk). No new save field (derived geometry). 25 pure + regression green. Headless 14/14, screenshot `docs/verification/phase3-gable-infill.png` |
 | B2 · Per-slope eaves / overhang | todo | open roof follow-up |
 | C1 · Angled walls | todo | CSG-sensitive |
 | C2 · Merged / T-junction walls | todo | CSG-sensitive; do last |
@@ -153,5 +153,5 @@ The rule that ends the #13/#14/#15 collisions. Before writing any code:
 | D2 · Outsource-drawing UX | todo | disabled tile |
 | E1 · Materials library UI | todo | activate `materials-swatch` |
 | E2 · Advisory checks (advisory only) | todo | activate `code-checks` |
-| E3 · Export (JSON/OBJ before IFC) | todo | activate `ifc-export` |
+| E3 · Export (JSON/OBJ before IFC) | PR open (auto/2026-08-09) — **headless VERIFIED** | new pure `core/exportObj.js` (Wavefront OBJ massing — walls as boxes, room floors as ear-clipped slabs — + companion MTL from the project colours; plus the lossless JSON save). Activates the dormant `ifc-export` Pro seam with an Export… toolbar popover. Zero Three.js added (all geometry math is pure core); no new save field; export mutates nothing. 47 pure + 337/25/40/41/15/18/33 regression green. **Headless 19/19, zero console errors, screenshot `docs/verification/phase3-export.png`** |
 | F1 · Meshy image-to-3D furniture | todo | server-side key; last |
