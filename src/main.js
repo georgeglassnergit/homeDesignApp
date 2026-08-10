@@ -11,6 +11,8 @@ import { ToolController } from './edit/tools.js';
 import { createPlanView } from './edit/planView.js';
 import { raycast, eventToNDC } from './edit/picking.js';
 import { createPlanCanvas } from './app/planCanvas.js';
+import { createUnderlay, calibrateUnderlay, withOpacity } from './core/underlay.js';
+import { parseLength } from './core/units.js';
 import { STARTERS } from './templates/starters.js';
 import { loadTemplate, setView, addLevel, removeLevel, renameLevel, setLevelHeight, setLevelRoof, setRoofType, composite } from './edit/commands.js';
 import { createDirtyTracker } from './app/dirty.js';
@@ -555,11 +557,135 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       else toggleRoofPanel(false);
     }
 
+    // --- D1: import a plan (trace an uploaded floor plan) --------------------------------------
+    // A raster floor plan is loaded as a plan-canvas UNDERLAY to draw walls over. It is pure
+    // DISPLAY state (never saved with the geometry) — main.js holds the current descriptor + the
+    // loaded image + the object URL to revoke; the plan surface draws it and captures calibration
+    // clicks. Import is un-tiered ('plan-import'); calibration is Pro ('plan-calibrate').
+    const underlayGroup = $('underlay-group'), underlayBtn = $('underlay-btn'), underlayPanel = $('underlay-panel');
+    const underlayFile = $('plan-file');
+    const underlayOpacity = $('underlay-opacity'), underlayOpacityVal = $('underlay-opacity-val');
+    const underlayCalibrateBtn = $('underlay-calibrate'), underlayRemoveBtn = $('underlay-remove');
+    let underlayDesc = null;      // the current underlay descriptor (core/underlay.js) or null
+    let underlayImg = null;       // the loaded HTMLImageElement or null
+    let underlayUrl = null;       // the object URL backing underlayImg (revoked on replace/remove)
+
+    // Turn a loaded image into an underlay centred on the current plan viewport (so it lands where
+    // the user is looking), default ~10 m wide until they calibrate. Replaces any prior underlay.
+    function importUnderlayFromImage(img) {
+      underlayImg = img;
+      underlayDesc = createUnderlay({
+        imgWidth: img.naturalWidth || img.width, imgHeight: img.naturalHeight || img.height,
+        center: { x: planView.vp.center.x, z: planView.vp.center.z },
+        opacity: underlayOpacity ? Number(underlayOpacity.value) / 100 : 0.5,
+      });
+      plan.setUnderlay(underlayDesc, underlayImg);
+      syncUnderlaySeam();
+      toggleUnderlayPanel(true);
+      hint('Floor plan imported — trace walls over it. Use “Plan image…” to calibrate its scale.');
+    }
+    // Load an image from a URL (object URL in the app; a data: URL from the headless harness).
+    function loadUnderlayUrl(url, revokePrev = true) {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => {
+          if (revokePrev && underlayUrl) { try { URL.revokeObjectURL(underlayUrl); } catch { /* data URL */ } }
+          underlayUrl = url;
+          importUnderlayFromImage(img);
+          resolve(underlayDesc);
+        };
+        img.onerror = () => reject(new Error('could not load image'));
+        img.src = url;
+      });
+    }
+    function openUnderlayPicker() { if (underlayFile) underlayFile.click(); }
+    if (underlayFile) underlayFile.addEventListener('change', () => {
+      const f = underlayFile.files && underlayFile.files[0];
+      if (!f) return;
+      loadUnderlayUrl(URL.createObjectURL(f)).catch(() => hint('Sorry — that image could not be loaded.'));
+      underlayFile.value = '';   // allow re-importing the same file
+    });
+
+    function removeUnderlay() {
+      plan.clearUnderlay();
+      if (underlayUrl) { try { URL.revokeObjectURL(underlayUrl); } catch { /* data URL */ } }
+      underlayDesc = null; underlayImg = null; underlayUrl = null;
+      cancelCalibrate();
+      syncUnderlaySeam();
+      toggleUnderlayPanel(false);
+    }
+
+    // Apply a finished calibration: two world clicks over a feature of known real length -> rescale
+    // the underlay (anchored at the first click so traced content stays put). Pure math; display only.
+    function applyCalibration(a, b, knownMeters) {
+      if (!underlayDesc || !(knownMeters > 0)) return null;
+      underlayDesc = calibrateUnderlay(underlayDesc, a, b, knownMeters);
+      plan.setUnderlay(underlayDesc, underlayImg);
+      return underlayDesc;
+    }
+    function armCalibrate() {
+      if (!plan.hasUnderlay() || !isAvailable('plan-calibrate', app.mode)) return false;
+      const ok = plan.startCalibrate((a, b) => {
+        underlayCalibrateBtn.classList.remove('armed');
+        const raw = (typeof prompt === 'function')
+          ? prompt('How long is that dimension in real life? (e.g. 3.6 m or 12\')') : null;
+        const meters = raw != null ? parseLength(raw, app.units) : NaN;
+        if (meters > 0) { applyCalibration(a, b, meters); hint('Scale calibrated to the imported plan.'); }
+        else { plan.draw(); hint('Calibration cancelled.'); }
+      });
+      if (ok) { underlayCalibrateBtn.classList.add('armed'); toggleUnderlayPanel(false); hint('Click two points on a dimension you know (e.g. a doorway), then type its real length.'); }
+      return ok;
+    }
+    function cancelCalibrate() {
+      if (underlayCalibrateBtn) underlayCalibrateBtn.classList.remove('armed');
+      return plan.cancelCalibrate();
+    }
+
+    if (underlayOpacity) {
+      underlayOpacity.addEventListener('keydown', (e) => e.stopPropagation());
+      underlayOpacity.addEventListener('input', () => {
+        if (underlayOpacityVal) underlayOpacityVal.textContent = `${underlayOpacity.value}%`;
+        if (underlayDesc) { underlayDesc = withOpacity(underlayDesc, Number(underlayOpacity.value) / 100); plan.setUnderlay(underlayDesc, underlayImg); }
+      });
+    }
+    if (underlayCalibrateBtn) underlayCalibrateBtn.addEventListener('click', (e) => { e.stopPropagation(); armCalibrate(); });
+    if (underlayRemoveBtn) underlayRemoveBtn.addEventListener('click', (e) => { e.stopPropagation(); removeUnderlay(); });
+
+    function positionUnderlayPanel() {
+      const r = underlayBtn.getBoundingClientRect();
+      underlayPanel.style.left = Math.max(8, Math.min(r.left, innerWidth - 256)) + 'px';
+      underlayPanel.style.top = (r.bottom + 6) + 'px';
+    }
+    function toggleUnderlayPanel(force) {
+      const open = force === undefined ? !underlayPanel.classList.contains('open') : force;
+      if (open) { renderUnderlayPanel(); positionUnderlayPanel(); }
+      underlayPanel.classList.toggle('open', open);
+    }
+    underlayBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleUnderlayPanel(); });
+    underlayPanel.addEventListener('click', (e) => e.stopPropagation());
+    addEventListener('click', () => toggleUnderlayPanel(false));   // click-away closes
+
+    function renderUnderlayPanel() {
+      if (underlayDesc && underlayOpacity) {
+        underlayOpacity.value = String(Math.round(underlayDesc.opacity * 100));
+        if (underlayOpacityVal) underlayOpacityVal.textContent = `${underlayOpacity.value}%`;
+      }
+      // calibration is the Pro part of D1 — hide the button in Simple (the seam).
+      if (underlayCalibrateBtn) underlayCalibrateBtn.classList.toggle('hidden', !isAvailable('plan-calibrate', app.mode));
+    }
+    // The "Plan image…" group only appears once a plan is imported (nothing to adjust before then).
+    function syncUnderlaySeam() {
+      const on = plan.hasUnderlay();
+      underlayGroup.classList.toggle('on', on);
+      if (on) renderUnderlayPanel();
+      else toggleUnderlayPanel(false);
+    }
+
     // --- Simple / Pro mode toggle (the single gate the whole UI reads from) ---
     const modeButtons = [...document.querySelectorAll('#modes button')];
     const syncModeButtons = () => modeButtons.forEach((b) => b.classList.toggle('active', b.dataset.mode === app.mode));
     modeButtons.forEach((b) => b.addEventListener('click', () => {
-      app.setMode(b.dataset.mode); syncModeButtons(); syncSnapSeam(); syncLevelSeam(); syncRoofSeam(); syncMeasureSeam(); renderInspector(); updateStatus();
+      app.setMode(b.dataset.mode); syncModeButtons(); syncSnapSeam(); syncLevelSeam(); syncRoofSeam(); syncMeasureSeam(); syncUnderlaySeam(); renderInspector(); updateStatus();
     }));
 
     // --- display units toggle (m ↔ ft-in) — storage stays metric; this is display only ---
@@ -688,11 +814,19 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       card.addEventListener('click', () => pick(s.id));
       grid.appendChild(card);
     }
-    // Deferred onboarding tiles — RoomSketcher's blank / template / import / outsource
-    // pattern; import + outsource are Phase 3+, shown disabled so the roadmap reads.
+    // Onboarding tiles — RoomSketcher's blank / template / import / outsource pattern.
+    // D1: "Import a plan" is now LIVE (loads a floor-plan underlay to trace over); "Outsource"
+    // stays a Phase 3+ coming-soon tile so the roadmap still reads.
+    {
+      const imp = document.createElement('button');
+      imp.className = 'tpl-card'; imp.id = 'tpl-import'; imp.title = 'Import a floor plan image and trace over it';
+      imp.innerHTML = `<div class="thumb">${planThumbnailSVG({ levels: [] })}</div>`
+        + `<div class="name">Import a plan</div><div class="desc">Trace an uploaded floor plan.</div>`;
+      imp.addEventListener('click', () => { closePicker(); openUnderlayPicker(); });
+      grid.appendChild(imp);
+    }
     for (const soon of [
-      { label: 'Import a plan', desc: 'Trace an uploaded floor plan.' },
-      { label: 'Outsource',     desc: 'Have your home drawn for you.' },
+      { label: 'Outsource', desc: 'Have your home drawn for you.' },
     ]) {
       const card = document.createElement('button');
       card.className = 'tpl-card'; card.disabled = true;
@@ -716,7 +850,7 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
     // --- keyboard: Esc closes the picker / ends a wall run, Del removes, Ctrl+Z/Y undo/redo ---
     addEventListener('keydown', (e) => {
       if (pickerEl.classList.contains('open')) { if (e.key === 'Escape') closePicker(); return; }
-      if (e.key === 'Escape') { if (app.camera === CAMERA.WALK) setCamera(CAMERA.ORBIT); else { controller.finishChain(); plan.draw(); } }
+      if (e.key === 'Escape') { if (plan.isCalibrating()) { cancelCalibrate(); hint('Calibration cancelled.'); } else if (app.camera === CAMERA.WALK) setCamera(CAMERA.ORBIT); else { controller.finishChain(); plan.draw(); } }
       else if (e.key === 'Delete' || e.key === 'Backspace') { controller.deleteSelection(); }
       else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? controller.redo() : controller.undo(); }
       else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { e.preventDefault(); controller.redo(); }
@@ -735,6 +869,7 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
     syncLevelSeam();
     syncRoofSeam();
     syncMeasureSeam();
+    syncUnderlaySeam();
     renderLevels();
     renderInspector();
     updateStatus();
@@ -770,7 +905,7 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
         const loc = describeSelection(project, app.selection, { mode: app.mode, units: app.units });
         return { title: loc ? loc.title : null, rename: loc ? loc.rename : null, msg: $('ins-msg') ? $('ins-msg').textContent : '' };
       },
-      __setMode: (m) => { app.setMode(m); syncModeButtons(); syncSnapSeam(); syncLevelSeam(); syncRoofSeam(); syncMeasureSeam(); renderInspector(); updateStatus(); },
+      __setMode: (m) => { app.setMode(m); syncModeButtons(); syncSnapSeam(); syncLevelSeam(); syncRoofSeam(); syncMeasureSeam(); syncUnderlaySeam(); renderInspector(); updateStatus(); },
       __setUnits: (u) => { app.setUnits(u); syncUnitButtons(); renderInspector(); },
       // snapping/constraint seam handles (deterministic driving from the headless harness)
       __snap: () => app.snap, __setSnap: (partial) => { app.setSnap(partial); syncSnapControls(); plan.draw(); return app.snap; },
@@ -803,6 +938,37 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       __roof: () => { const r = (roofBearingLevel() || {}).roof; return r ? { levelId: roofBearingLevel().id, type: r.type, pitch: r.pitch, ridge: r.ridge } : null; },
       __setRoofType: (patch) => { applyRoof(patch); const r = (roofBearingLevel() || {}).roof; return r ? { type: r.type, pitch: r.pitch, ridge: r.ridge } : null; },
       __roofSeamVisible: () => roofGroup.classList.contains('on'),
+      // D1: import-a-plan underlay handles — deterministic driving from the headless harness.
+      // A file dialog can't open headlessly, so __importUnderlay loads a data: URL directly (the
+      // same code path the file-input change handler runs). Returns the descriptor + world rect.
+      __importUnderlay: (dataUrl) => loadUnderlayUrl(dataUrl, false).then(() => window.__underlay()),
+      __underlay: () => {
+        if (!plan.hasUnderlay()) return null;
+        const u = plan.getUnderlay();
+        const rect = { widthM: u.imgWidth * u.metersPerPixel, heightM: u.imgHeight * u.metersPerPixel };
+        return { imgWidth: u.imgWidth, imgHeight: u.imgHeight, metersPerPixel: u.metersPerPixel, center: u.center, opacity: u.opacity, widthM: rect.widthM, heightM: rect.heightM };
+      },
+      __underlayGroupVisible: () => underlayGroup.classList.contains('on'),
+      __underlayCalibrateVisible: () => !!(underlayCalibrateBtn && !underlayCalibrateBtn.classList.contains('hidden')),
+      __setUnderlayOpacity: (pct) => { if (!underlayOpacity) return null; underlayOpacity.value = String(pct); underlayOpacity.dispatchEvent(new Event('input')); return plan.getUnderlay() ? plan.getUnderlay().opacity : null; },
+      __removeUnderlay: () => { removeUnderlay(); return { hasUnderlay: plan.hasUnderlay(), groupVisible: underlayGroup.classList.contains('on') }; },
+      // Drive the real two-click calibration capture (bypassing the prompt): arm calibration with a
+      // preset known length, then feed the two plan points the way the canvas handler does.
+      __calibrateUnderlay: (ax, az, bx, bz, meters) => {
+        if (!plan.hasUnderlay()) return null;
+        plan.startCalibrate((a, b) => applyCalibration(a, b, meters));
+        plan.calibratePoint({ x: ax, z: az });
+        const captured = plan.calibratePoint({ x: bx, z: bz });
+        const u = plan.getUnderlay();
+        return { captured, metersPerPixel: u.metersPerPixel, center: u.center, undo: history.undoStack.length, selection: app.selection };
+      },
+      __calibrateWorldSpan: (px1, pv1, px2, pv2) => {
+        // helper for the probe: world distance between two IMAGE pixels under the current underlay
+        const u = plan.getUnderlay(); if (!u) return null;
+        const toW = (px, pv) => ({ x: u.center.x + (px - u.imgWidth / 2) * u.metersPerPixel, z: u.center.z + (pv - u.imgHeight / 2) * u.metersPerPixel });
+        const a = toW(px1, pv1), b = toW(px2, pv2);
+        return Math.hypot(b.x - a.x, b.z - a.z);
+      },
       // measure-tool (Pro-seam ruler) handles — deterministic driving from the headless harness
       __setTool: (t) => { controller.setTool(t); syncToolButtons(); hint(HINTS[app.activeTool] || ''); plan.draw(); return app.activeTool; },
       __measureSeamVisible: () => !!(measureBtn && measureBtn.classList.contains('on')),
