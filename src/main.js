@@ -16,6 +16,7 @@ import { STARTERS } from './templates/starters.js';
 import { loadTemplate, setView, addLevel, removeLevel, renameLevel, setLevelHeight, setLevelRoof, setRoofType, composite } from './edit/commands.js';
 import { createDirtyTracker } from './app/dirty.js';
 import { planThumbnailSVG } from './app/thumbnail.js';
+import { exportObj, exportProjectJson, exportBaseName } from './core/exportObj.js';
 
 const spike = { booted: false, built: false, sceneMeshes: 0, roundTripOk: false, counts: null, error: null };
 window.__app = spike;
@@ -608,11 +609,56 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       else toggleRoofPanel(false);
     }
 
+    // --- Export (Pro seam: 'ifc-export') — pure model → interchange, downloaded client-side.
+    // OBJ (building massing + companion MTL) for other 3D tools, and the project's own lossless
+    // JSON save. All the geometry math is pure core/exportObj.js; this just wires the download.
+    const exportGroup = $('export-group'), exportBtn = $('export-btn'), exportPanel = $('export-panel');
+    // Trigger a client-side download of some text as a file (Blob + object URL + transient anchor).
+    function downloadText(filename, text, mime = 'text/plain') {
+      const blob = new Blob([text], { type: `${mime};charset=utf-8` });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+    }
+    function doExportObj() {
+      const base = exportBaseName(project);
+      const { obj, mtl } = exportObj(project, { mtlName: `${base}.mtl` });
+      downloadText(`${base}.obj`, obj, 'model/obj');
+      downloadText(`${base}.mtl`, mtl, 'text/plain');
+      toggleExportPanel(false);
+    }
+    function doExportJson() {
+      downloadText(`${exportBaseName(project)}.json`, exportProjectJson(project), 'application/json');
+      toggleExportPanel(false);
+    }
+    function positionExportPanel() {
+      const r = exportBtn.getBoundingClientRect();
+      exportPanel.style.left = Math.max(8, Math.min(r.left, innerWidth - 266)) + 'px';
+      exportPanel.style.top = (r.bottom + 6) + 'px';
+    }
+    function toggleExportPanel(force) {
+      const open = force === undefined ? !exportPanel.classList.contains('open') : force;
+      if (open) positionExportPanel();
+      exportPanel.classList.toggle('open', open);
+    }
+    exportBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleExportPanel(); });
+    exportPanel.addEventListener('click', (e) => e.stopPropagation());
+    addEventListener('click', () => toggleExportPanel(false));   // click-away closes
+    $('export-obj').addEventListener('click', (e) => { e.stopPropagation(); doExportObj(); });
+    $('export-json').addEventListener('click', (e) => { e.stopPropagation(); doExportJson(); });
+    function syncExportSeam() {
+      const on = isAvailable('ifc-export', app.mode);
+      exportGroup.classList.toggle('on', on);
+      if (!on) toggleExportPanel(false);
+    }
+
     // --- Simple / Pro mode toggle (the single gate the whole UI reads from) ---
     const modeButtons = [...document.querySelectorAll('#modes button')];
     const syncModeButtons = () => modeButtons.forEach((b) => b.classList.toggle('active', b.dataset.mode === app.mode));
     modeButtons.forEach((b) => b.addEventListener('click', () => {
-      app.setMode(b.dataset.mode); syncModeButtons(); syncSnapSeam(); syncLevelSeam(); syncRoofSeam(); syncMeasureSeam(); renderInspector(); updateStatus();
+      app.setMode(b.dataset.mode); syncModeButtons(); syncSnapSeam(); syncLevelSeam(); syncRoofSeam(); syncMeasureSeam(); syncExportSeam(); renderInspector(); updateStatus();
     }));
 
     // --- display units toggle (m ↔ ft-in) — storage stays metric; this is display only ---
@@ -788,6 +834,7 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
     syncLevelSeam();
     syncRoofSeam();
     syncMeasureSeam();
+    syncExportSeam();
     renderLevels();
     renderInspector();
     updateStatus();
@@ -835,7 +882,7 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
         else if (sel && sel.kind === 'room') { for (const l of project.levels) { const r = l.rooms.find((x) => x.id === sel.id); if (r) stored = r.material; } }
         return { stored, materials: loc ? loc.materials : null, registered: !!(project.materials && project.materials[materialId]), msg: $('ins-msg') ? $('ins-msg').textContent : '' };
       },
-      __setMode: (m) => { app.setMode(m); syncModeButtons(); syncSnapSeam(); syncLevelSeam(); syncRoofSeam(); syncMeasureSeam(); renderInspector(); updateStatus(); },
+      __setMode: (m) => { app.setMode(m); syncModeButtons(); syncSnapSeam(); syncLevelSeam(); syncRoofSeam(); syncMeasureSeam(); syncExportSeam(); renderInspector(); updateStatus(); },
       __setUnits: (u) => { app.setUnits(u); syncUnitButtons(); renderInspector(); },
       // snapping/constraint seam handles (deterministic driving from the headless harness)
       __snap: () => app.snap, __setSnap: (partial) => { app.setSnap(partial); syncSnapControls(); plan.draw(); return app.snap; },
@@ -868,6 +915,11 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       __roof: () => { const r = (roofBearingLevel() || {}).roof; return r ? { levelId: roofBearingLevel().id, type: r.type, pitch: r.pitch, ridge: r.ridge, overhang: r.overhang, eaveOverhang: r.eaveOverhang, rakeOverhang: r.rakeOverhang } : null; },
       __setRoofType: (patch) => { applyRoof(patch); const r = (roofBearingLevel() || {}).roof; return r ? { type: r.type, pitch: r.pitch, ridge: r.ridge, overhang: r.overhang, eaveOverhang: r.eaveOverhang, rakeOverhang: r.rakeOverhang } : null; },
       __roofSeamVisible: () => roofGroup.classList.contains('on'),
+      // export (Pro-seam 'ifc-export') handles — run the pure exporter over the live project and
+      // report the OBJ/MTL text + counts + warnings so the harness can verify without downloading.
+      __exportSeamVisible: () => exportGroup.classList.contains('on'),
+      __exportObj: () => exportObj(project, { mtlName: `${exportBaseName(project)}.mtl` }),
+      __exportJson: () => exportProjectJson(project),
       // measure-tool (Pro-seam ruler) handles — deterministic driving from the headless harness
       __setTool: (t) => { controller.setTool(t); syncToolButtons(); hint(HINTS[app.activeTool] || ''); plan.draw(); return app.activeTool; },
       __measureSeamVisible: () => !!(measureBtn && measureBtn.classList.contains('on')),

@@ -234,6 +234,26 @@
       /* Measure tool (Pro seam: 'measure-tool') — the ruler button appears only in Pro. */
       #tool-measure { display: none; }
       #tool-measure.on { display: inline-block; }
+
+      /* Export (Pro seam: 'ifc-export') — OBJ massing + JSON save. Same hidden-in-Simple /
+         revealed-in-Pro popover pattern as the roof/level/snap groups. */
+      #export-group { display: none; }           /* shown only in Pro (isAvailable gate) */
+      #export-group.on { display: flex; }
+      #export-panel {
+        position: fixed; z-index: 45; display: none;
+        background: #f4efe7; border: 1px solid #cbb2a0; border-radius: 11px;
+        box-shadow: 0 12px 34px rgba(43,38,34,.28); padding: 12px 14px; width: 250px;
+        font-size: 12.5px;
+      }
+      #export-panel.open { display: block; }
+      #export-panel .xp-title { font-family: Georgia, serif; font-weight: 700; font-size: 13.5px; margin-bottom: 8px; }
+      #export-panel .xp-btn {
+        font: inherit; width: 100%; margin: 5px 0; padding: 8px; cursor: pointer; text-align: left;
+        border: 1px solid #c3ab97; border-radius: 8px; background: #fff; color: #2b2622;
+      }
+      #export-panel .xp-btn:hover { background: #fbf7f0; border-color: #6b5b4b; }
+      #export-panel .xp-btn small { display: block; color: #8a7c6c; font-size: 10.5px; margin-top: 2px; }
+      #export-panel .xp-hint { color: #8a7c6c; font-size: 10.5px; margin-top: 9px; line-height: 1.4; }
     </style>
   </head>
   <body>
@@ -284,6 +304,9 @@
         </div>
         <div class="group" id="roof-group" title="Roof shape (Pro)">
           <button id="roof-btn" title="Flat / gable / hip roof and pitch">Roof…</button>
+        </div>
+        <div class="group" id="export-group" title="Export your design (Pro)">
+          <button id="export-btn" title="Export the model to OBJ (for Blender / SketchUp / CAD) or save as JSON">Export…</button>
         </div>
         <span class="hint" id="toolhint">Select a starter or draw a room</span>
       </div>
@@ -356,6 +379,12 @@
         <span class="rp-val" id="roof-rake-val">30</span>
       </div>
       <div class="rp-hint">Gable and hip roofs rise from the top storey's walls. Pitch is the slope; ridge is which way the peak runs (Auto = the longer wall). Eaves and rake set how far the roof oversails the walls (cm) on the sloped sides and the ends. Approximate visualization, not a framing spec.</div>
+    </div>
+    <div id="export-panel" role="dialog" aria-label="Export">
+      <div class="xp-title">Export your design</div>
+      <button class="xp-btn" id="export-obj">Download OBJ + MTL<small>Building massing (walls + floors) for Blender, SketchUp, CAD</small></button>
+      <button class="xp-btn" id="export-json">Download project (JSON)<small>Your lossless save — reload it here to keep editing</small></button>
+      <div class="xp-hint">OBJ is an approximate massing export (openings, roof and furniture are noted, not baked). Not a fabrication or framing spec.</div>
     </div>
     <div id="picker" aria-modal="true" role="dialog" aria-label="Choose a template">
       <div id="picker-card">
