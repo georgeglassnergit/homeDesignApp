@@ -330,6 +330,46 @@ export function setElementLabel(levelId, kind, id, label) {
   };
 }
 
+// Apply a material finish to a wall or floor (the E1 `materials-swatch` seam). Every element
+// already carries a `material` key naming an entry in the project's `materials` map, so this
+// command never adds a NEW save field — it only repoints that existing key and, when the chosen
+// finish isn't yet in the map, registers its definition (from the library catalog) so the view
+// registry can resolve it. Byte-lossless undo in both directions: it restores the prior key and,
+// if THIS command added the finish's definition, deletes it again (adding then deleting a key
+// restores the map's insertion order, so serialize→deserialize→serialize is byte-identical).
+// Registering only on first use keeps saves minimal (unused library finishes are never stored),
+// and the add/remove is strictly LIFO with history, so a finish shared by two elements survives
+// undo of the second and is removed only when the first (which added it) is undone.
+// `kind` picks the finder: 'wall' → findWall, 'room' → findRoom (a room's floor material).
+export function setElementMaterial(levelId, kind, id, materialId, def = null) {
+  const findEl = (project) => {
+    const l = findLevel(project, levelId);
+    if (!l) return null;
+    return kind === 'wall' ? findWall(l, id) : findRoom(l, id);
+  };
+  let prev, addedKey = null;
+  return {
+    name: kind === 'wall' ? 'Set wall material' : 'Set floor material',
+    do(project) {
+      const el = findEl(project);
+      if (!el) throw new Error(`setElementMaterial: missing ${kind} ${id} on level ${levelId}`);
+      if (!project.materials) project.materials = {};
+      // Register the finish's definition on first use so the render registry can resolve the key.
+      if (def && !Object.prototype.hasOwnProperty.call(project.materials, materialId)) {
+        project.materials[materialId] = { color: def.color, roughness: def.roughness, ...(def.metalness != null ? { metalness: def.metalness } : {}) };
+        addedKey = materialId;
+      }
+      prev = el.material;
+      el.material = materialId;
+    },
+    undo(project) {
+      const el = findEl(project);
+      if (el) el.material = prev;
+      if (addedKey && project.materials) delete project.materials[addedKey];
+    },
+  };
+}
+
 // Set a storey's floor-to-floor height. Raising a lower storey pushes every storey above
 // it up (via stackElevations); the prior height and all elevations are captured for a
 // byte-lossless undo. The caller re-validates (height must be > 0) and rolls back on fail.

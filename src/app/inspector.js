@@ -6,10 +6,10 @@
 // parse feet-and-inches / metric via units.js. main.js renders this descriptor to DOM and
 // dispatches the edit through history; the Node test suite asserts on the descriptor + command
 // directly. ZERO Three.js and ZERO DOM in here (importing under Node is the separation guard).
-import { findWall, findOpening, findRoom, wallLength, polygonArea, polygonPerimeter, projectFloorArea } from '../core/model.js';
+import { findWall, findOpening, findRoom, wallLength, polygonArea, polygonPerimeter, projectFloorArea, MATERIAL_LIBRARY, materialDef, isLibraryMaterial } from '../core/model.js';
 import { isAvailable, MODE } from './state.js';
 import { formatLength, formatArea, parseLength, UNIT } from '../core/units.js';
-import { resizeWall, resizeOpening, renameRoom, setElementLabel } from '../edit/commands.js';
+import { resizeWall, resizeOpening, renameRoom, setElementLabel, setElementMaterial } from '../edit/commands.js';
 
 // Longest room name we accept — long enough for "Master bedroom / ensuite", short enough that
 // the label never overruns the inspector or a plan-canvas chip. Enforced in buildRoomRename.
@@ -40,6 +40,33 @@ function locate(project, selection) {
 // snap storage precision so display/round-trip stays clean (meters kept to the micron)
 const round = (m) => Math.round(m * 1e6) / 1e6;
 
+// Friendly names for the base material roles the model ships with (defaultMaterials()), so a
+// wall/floor that still uses its role default reads clearly in the swatch list rather than as
+// a bare key. Any other id (a library finish) carries its own label from the catalog.
+const ROLE_LABELS = Object.freeze({
+  wall: 'Wall (default)', floor: 'Floor (default)', roof: 'Roof (default)', ground: 'Ground', default: 'Default',
+});
+
+// Build the E1 `materials-swatch` slot for an element that carries a `material` key (a wall or a
+// room's floor). Returns a descriptor of the finish palette — the current finish + a swatch list
+// (the library, with the current finish guaranteed present even when it's a base role not in the
+// catalog) — or null when the seam is unavailable. Pure data: no command, no Three.js; picking a
+// swatch commits setElementMaterial via buildSetMaterial. `materials-swatch` is a Simple-tier row,
+// so this is a novice-visible affordance available in both modes.
+function materialsSlot(project, el, mode) {
+  if (!el || !isAvailable('materials-swatch', mode)) return null;
+  const defs = (project && project.materials) || {};
+  const colorOf = (id) => (defs[id] && defs[id].color) || (materialDef(id) && materialDef(id).color) || '#cccccc';
+  const current = el.material;
+  const options = MATERIAL_LIBRARY.map((m) => ({ id: m.id, label: m.label, color: m.color }));
+  // Keep the current finish selectable/visible even if it's a base role (or a bespoke saved
+  // material) that isn't in the library — prepend it so a swatch always reflects "what's on now".
+  if (!isLibraryMaterial(current) && !options.some((o) => o.id === current)) {
+    options.unshift({ id: current, label: ROLE_LABELS[current] || current, color: colorOf(current) });
+  }
+  return { key: 'material', label: 'Material', current, currentColor: colorOf(current), options };
+}
+
 // Which fields must stay strictly positive vs. merely non-negative (used by the edit guard).
 export const POSITIVE_FIELDS = Object.freeze(new Set(['length', 'thickness', 'height', 'width']));
 export const NONNEG_FIELDS = Object.freeze(new Set(['sill', 'offset']));
@@ -67,6 +94,9 @@ export function describeSelection(project, selection, { mode = MODE.SIMPLE, unit
       rename: isAvailable('room-rename', mode)
         ? { key: 'name', label: 'Name', value: loc.room.name || 'Room' }
         : null,
+      // The floor's finish is editable in both tiers via the materials swatch (E1). Selecting a
+      // swatch commits setElementMaterial (an undoable, lossless material change), never an input.
+      materials: materialsSlot(project, loc.room, mode),
       hint: isAvailable('room-rename', mode)
         ? 'Rename the room above; floor area updates automatically as you edit it'
         : 'Floor area updates automatically as you edit the room',
@@ -111,7 +141,10 @@ export function describeSelection(project, selection, { mode = MODE.SIMPLE, unit
   const rename = isAvailable('element-label', mode)
     ? { key: 'label', label: 'Label', value: currentLabel, placeholder: `Name this ${typeName.toLowerCase()} (optional)` }
     : null;
-  return { title, type: loc.kind === 'wall' ? 'wall' : loc.opening.kind, id: selection.id, editable, rename, fields };
+  // A wall carries a material finish (E1 swatch); an opening (door/window) is a void cut into the
+  // wall, not a rendered surface, so it has no material slot.
+  const materials = loc.kind === 'wall' ? materialsSlot(project, loc.wall, mode) : null;
+  return { title, type: loc.kind === 'wall' ? 'wall' : loc.opening.kind, id: selection.id, editable, rename, materials, fields };
 }
 
 // Describe the whole-home floor-area summary shown when nothing is selected (the inspector's
@@ -197,4 +230,24 @@ export function buildElementLabel(project, selection, rawValue) {
   const label = String(rawValue ?? '').replace(/\s+/g, ' ').trim().slice(0, MAX_ELEMENT_LABEL);
   if (label === current) return { unchanged: true };
   return { command: setElementLabel(loc.level.id, loc.kind, selection.id, label), label };
+}
+
+// Build the undoable command for applying a material finish (the E1 materials-swatch seam).
+// Applies to a selected wall or room (floor); returns { command, materialId } on success,
+// { unchanged: true } when the finish already applied (so a re-click pushes no history), and
+// { error } when the selection can't take a material or the id is neither a library finish nor
+// an id already present in the project's materials (guards against setting a phantom key). The
+// command repoints the element's EXISTING `material` field, so it never touches the save schema.
+export function buildSetMaterial(project, selection, materialId) {
+  const loc = locate(project, selection);
+  if (!loc || (loc.kind !== 'wall' && loc.kind !== 'room')) return { error: 'Select a wall or floor to apply a material' };
+  const el = loc.kind === 'wall' ? loc.wall : loc.room;
+  const known = isLibraryMaterial(materialId)
+    || Object.prototype.hasOwnProperty.call((project && project.materials) || {}, materialId);
+  if (!known) return { error: `Unknown material "${materialId}"` };
+  if (materialId === el.material) return { unchanged: true };
+  // Pass the catalog def so the command can register a library finish on first use; a base role
+  // (or an already-saved material) has no library def and is already resolvable, so def is null.
+  const def = materialDef(materialId);
+  return { command: setElementMaterial(loc.level.id, loc.kind, selection.id, materialId, def), materialId };
 }

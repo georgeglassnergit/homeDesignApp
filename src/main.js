@@ -6,7 +6,7 @@ import { roofOverhangs } from './core/roofShape.js';
 import { createAppState, availableTools, isAvailable, MODE, TOOL, VIEW, CAMERA } from './app/state.js';
 import { cutawayHiddenWalls } from './viewer/cutaway.js';
 import { formatLength, UNIT } from './core/units.js';
-import { describeSelection, describeHomeSummary, buildDimensionEdit, buildRoomRename, buildElementLabel } from './app/inspector.js';
+import { describeSelection, describeHomeSummary, buildDimensionEdit, buildRoomRename, buildElementLabel, buildSetMaterial } from './app/inspector.js';
 import { History } from './edit/history.js';
 import { ToolController } from './edit/tools.js';
 import { createPlanView } from './edit/planView.js';
@@ -160,11 +160,22 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
         ? `<label class="ins-row"><span>${f.label}</span>`
           + `<input class="ins-field" data-key="${f.key}" value="${f.text}" spellcheck="false" autocomplete="off"></label>`
         : `<div class="ins-row"><span>${f.label}</span><b>${f.text}</b></div>`).join('');
+      // E1 materials swatch: a Simple-tier row of clickable finish swatches for a wall/floor. The
+      // current finish is marked selected; clicking one commits setElementMaterial (undoable).
+      const matRow = desc.materials
+        ? `<div class="ins-row ins-mat"><span>${desc.materials.label}</span>`
+          + `<div class="ins-swatches">`
+          + desc.materials.options.map((o) =>
+              `<button type="button" class="ins-swatch${o.id === desc.materials.current ? ' sel' : ''}" `
+              + `data-material="${esc(o.id)}" style="--sw:${esc(o.color)}" `
+              + `title="${esc(o.label)}" aria-label="${esc(o.label)}"></button>`).join('')
+          + `</div></div>`
+        : '';
       const foot = desc.editable
         ? `<div class="ins-hint">Type an exact size (e.g. 3.2m or 10'6") and press Enter</div>`
         : `<div class="ins-hint">${desc.hint || 'Switch to <b>Pro</b> to edit exact dimensions'}</div>`;
       insBox.className = desc.editable ? 'editable' : '';
-      insBox.innerHTML = `<div class="ins-title">${esc(desc.title)}</div>${nameRow}${rows}${foot}<div class="ins-msg" id="ins-msg"></div>`;
+      insBox.innerHTML = `<div class="ins-title">${esc(desc.title)}</div>${nameRow}${rows}${matRow}${foot}<div class="ins-msg" id="ins-msg"></div>`;
       if (desc.editable) {
         insBox.querySelectorAll('.ins-field:not(.ins-name)').forEach((inp) => {
           inp.addEventListener('keydown', (e) => {
@@ -186,6 +197,24 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
           nameInp.addEventListener('blur', () => commitRename(nameInp.value));
         }
       }
+      if (desc.materials) {
+        insBox.querySelectorAll('.ins-swatch').forEach((btn) => {
+          btn.addEventListener('click', (e) => { e.preventDefault(); commitMaterial(btn.dataset.material); });
+        });
+      }
+    }
+
+    // Commit a material-finish change through history (E1 materials-swatch seam). A no-op (the
+    // finish already applied) pushes nothing; setElementMaterial only repoints the element's
+    // existing `material` key (and registers a library finish on first use), so no re-validate/
+    // rollback dance is needed. refresh() rebuilds geometry, so the new colour shows immediately.
+    function commitMaterial(materialId) {
+      const res = buildSetMaterial(project, app.selection, materialId);
+      if (res.unchanged) return;
+      const msg = $('ins-msg');
+      if (res.error) { if (msg) msg.textContent = res.error; return; }
+      history.execute(res.command);
+      refresh();                     // re-derive materials registry + re-render the swatch state
     }
 
     // Dispatch a rename-slot commit to the right builder for the current selection: a room
@@ -793,6 +822,18 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
         commitElementLabel(raw);
         const loc = describeSelection(project, app.selection, { mode: app.mode, units: app.units });
         return { title: loc ? loc.title : null, rename: loc ? loc.rename : null, msg: $('ins-msg') ? $('ins-msg').textContent : '' };
+      },
+      // E1: apply a material finish to the selected wall/floor. Commits through the same builder
+      // the swatch UI uses, then reports the element's stored material + the descriptor slot so the
+      // harness can prove the model updated (and that the finish was registered in project.materials).
+      __setMaterial: (materialId) => {
+        commitMaterial(materialId);
+        const loc = describeSelection(project, app.selection, { mode: app.mode, units: app.units });
+        const sel = app.selection;
+        let stored = null;
+        if (sel && sel.kind === 'wall') { for (const l of project.levels) { const w = l.walls.find((x) => x.id === sel.id); if (w) stored = w.material; } }
+        else if (sel && sel.kind === 'room') { for (const l of project.levels) { const r = l.rooms.find((x) => x.id === sel.id); if (r) stored = r.material; } }
+        return { stored, materials: loc ? loc.materials : null, registered: !!(project.materials && project.materials[materialId]), msg: $('ins-msg') ? $('ins-msg').textContent : '' };
       },
       __setMode: (m) => { app.setMode(m); syncModeButtons(); syncSnapSeam(); syncLevelSeam(); syncRoofSeam(); syncMeasureSeam(); renderInspector(); updateStatus(); },
       __setUnits: (u) => { app.setUnits(u); syncUnitButtons(); renderInspector(); },
