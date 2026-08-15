@@ -93,7 +93,7 @@ Most Phase 3 rows are already registered. Deltas as slices land:
 | Auto room detection | A4 | ✅ (read) | ✅ (name) | new row |
 | Gable infill / eaves | B1/B2 | — | ✅ | reuse `roof-editor` |
 | Angled / merged walls | C1/C2 | — | ✅ | reuse `draw-wall` + new Pro entry |
-| Import a plan | D1 | ✅ | ✅ (calibrate) | new row |
+| Import a plan | D1 | ✅ | ✅ (calibrate) | `plan-import` (Simple) + `plan-calibrate` (Pro) — **live** |
 | Materials library | E1 | ✅ | ✅ | activate `materials-swatch` |
 | Advisory checks | E2 | — | ✅ | activate `code-checks` |
 | Export | E3 | — | ✅ | activate `ifc-export` |
@@ -146,6 +146,7 @@ The rule that ends the #13/#14/#15 collisions. Before writing any code:
 | A3 · Wall/opening label (Pro) | Landed (PR #22) | new `element-label` tier; `setElementLabel` command + `buildElementLabel` builder; OPTIONAL `label` on wall/opening (empty clears the key → old saves byte-identical). inspector title reflects the label. 41 pure + 337/40/18/15/33 regression green. Headless 17/17, screenshot `docs/verification/phase3-element-label.png` |
 | A4 · Auto room detection | todo | larger |
 | B1 · Gable-end wall infill | Landed (PR #23) | pure `gableInfill` + `wallBounds` in `core/roofShape.js` (wall-plane triangular prisms rising to the ridge, wall material) + `buildGableInfillMesh` view mesh, wired in `sceneBuilder`; roof shell untouched (additive, zero-risk). No new save field (derived geometry). 25 pure + regression green. Headless 14/14, screenshot `docs/verification/phase3-gable-infill.png` |
+| B2 · Per-slope eaves / overhang | PR open (auto/2026-08-05, PR #24) | per-slope `eaveOverhang`/`rakeOverhang` in `core/roofShape.js`; open roof follow-up |
 | B2 · Per-slope eaves / overhang | todo | open roof follow-up |
 | B1 · Gable-end wall infill | Landed (PR #23) | pure `gableInfill` + `wallBounds` in `core/roofShape.js` (wall-plane triangular prisms rising to the ridge, wall material) + `buildGableInfillMesh` view mesh, wired in `sceneBuilder`; roof shell untouched (additive, zero-risk). No new save field (derived geometry). 25 pure + 337/40/41/33 regression green. **Headless 14/14, zero console errors, screenshot `docs/verification/phase3-gable-infill.png`** |
 | B2 · Per-slope eaves / overhang | PR open (#24, auto/2026-08-05) | per-slope `eaveOverhang`/`rakeOverhang` (optional, backfilled from uniform `overhang`); ridge axis resolved from wall bounds. Awaiting merge — do not re-pick. |
@@ -153,8 +154,11 @@ The rule that ends the #13/#14/#15 collisions. Before writing any code:
 | B2 · Per-slope eaves / overhang | PR open (auto/2026-08-05) — **headless VERIFIED** | eave (sloped sides) vs. rake (gable/hip ends) overhang. OPTIONAL `eaveOverhang`/`rakeOverhang` on the roof, both backfilling from the legacy uniform `overhang` (`roofOverhangs`) → old saves byte-identical. Pure `roofFootprint` now expands per-slope, resolving the ridge axis from the bare wall bounds so a big rake never flips the ridge; view passes a concrete ridge to `roofSolid`/`gableInfill`. Two Pro sliders in the roof panel (cm). 40 pure + 337/25/40/41/15/18/33 regression green. **Headless 16/16, zero console errors, screenshot `docs/verification/phase3-roof-overhang.png`** |
 | C1 · Angled walls | todo | CSG-sensitive |
 | C2 · Merged / T-junction walls | todo | CSG-sensitive; do last |
-| D1 · Import a plan (trace underlay) | todo | disabled tile |
+| D1 · Import a plan (trace underlay) | PR open (auto/2026-08-10) — **headless VERIFIED** | pure `core/underlay.js` (image↔world mapping + `calibrateScale`/`calibrateUnderlay`, anchored rescale); underlay is DISPLAY state, never saved (Phase 1 model byte-identical). `app/planCanvas.js` draws it beneath the walls + captures calibration clicks; `main.js` wires the live "Import a plan" tile + "Plan image…" popover (opacity / calibrate / remove). New seam rows `plan-import` (Simple) + `plan-calibrate` (Pro). 38 pure + 337/25/40/41/15/18/33 regression green. **Headless 21/21, zero console errors, screenshot `docs/verification/phase3-import-plan.png`** |
 | D2 · Outsource-drawing UX | todo | disabled tile |
+| E1 · Materials library UI | PR open (auto/2026-08-08, PR #25) | activate `materials-swatch`; `setElementMaterial` command |
+| E2 · Advisory checks (advisory only) | todo | activate `code-checks` |
+| E3 · Export (JSON/OBJ before IFC) | PR open (auto/2026-08-09, PR #26) | activate `ifc-export`; new pure `core/exportObj.js` (OBJ massing + lossless JSON) |
 | E1 · Materials library UI | PR open (auto/2026-08-08) — **headless VERIFIED** | activated `materials-swatch`: `MATERIAL_LIBRARY` (10 finishes) + `materialDef`/`isLibraryMaterial` in `core/model.js`; `setElementMaterial` command repoints the element's EXISTING `material` key and registers a finish on first use, byte-lossless undo (restores key + removes the added preset, LIFO-safe for a shared finish); inspector `materials` swatch slot for walls/floors + `buildSetMaterial`; Simple-tier (both modes). No new save field type. 49 pure + 337/41/25/40/15/18/33 regression green. **Headless 20/20, zero console errors, screenshot `docs/verification/phase3-materials.png`** |
 | E2 · Advisory checks (advisory only) | todo | activate `code-checks` |
 | E3 · Export (JSON/OBJ before IFC) | PR open (auto/2026-08-09) — **headless VERIFIED** | new pure `core/exportObj.js` (Wavefront OBJ massing — walls as boxes, room floors as ear-clipped slabs — + companion MTL from the project colours; plus the lossless JSON save). Activates the dormant `ifc-export` Pro seam with an Export… toolbar popover. Zero Three.js added (all geometry math is pure core); no new save field; export mutates nothing. 47 pure + 337/25/40/41/15/18/33 regression green. **Headless 19/19, zero console errors, screenshot `docs/verification/phase3-export.png`** |

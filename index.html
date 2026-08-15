@@ -254,6 +254,35 @@
       #export-panel .xp-btn:hover { background: #fbf7f0; border-color: #6b5b4b; }
       #export-panel .xp-btn small { display: block; color: #8a7c6c; font-size: 10.5px; margin-top: 2px; }
       #export-panel .xp-hint { color: #8a7c6c; font-size: 10.5px; margin-top: 9px; line-height: 1.4; }
+
+      /* D1 — imported floor-plan underlay. The "Plan image…" group is hidden until a plan is
+         imported (there's nothing to adjust before then); the popover controls opacity, scale
+         calibration (Pro), and removal. Same popover styling as the roof/level panels. */
+      #underlay-group { display: none; }         /* shown only once a plan is imported */
+      #underlay-group.on { display: flex; }
+      #underlay-btn.armed { background: #6b5b4b; color: #fff; border-color: #6b5b4b; }
+      #underlay-panel {
+        position: fixed; z-index: 45; display: none;
+        background: #f4efe7; border: 1px solid #cbb2a0; border-radius: 11px;
+        box-shadow: 0 12px 34px rgba(43,38,34,.28); padding: 12px 14px; width: 240px;
+        font-size: 12.5px;
+      }
+      #underlay-panel.open { display: block; }
+      #underlay-panel .up-title { font-family: Georgia, serif; font-weight: 700; font-size: 13.5px; margin-bottom: 8px; }
+      #underlay-panel .up-row { display: flex; align-items: center; gap: 8px; margin: 7px 0; }
+      #underlay-panel .up-row label { flex: 0 0 auto; }
+      #underlay-panel input[type=range] { flex: 1; accent-color: #6b5b4b; cursor: pointer; }
+      #underlay-panel .up-val { flex: 0 0 auto; width: 34px; text-align: right; color: #8a7c6c; font-variant-numeric: tabular-nums; }
+      #underlay-panel button {
+        font: inherit; width: 100%; margin-top: 8px; padding: 6px; cursor: pointer;
+        border: 1px solid #c3ab97; border-radius: 8px; background: #fff; color: #2b2622;
+      }
+      #underlay-panel button:hover { background: #fbf7f0; }
+      #underlay-panel #underlay-remove { color: #a33; }
+      #underlay-panel #underlay-remove:hover { background: #fbeaea; }
+      #underlay-panel #underlay-calibrate.armed { background: #2f6db0; color: #fff; border-color: #2f6db0; }
+      #underlay-panel #underlay-calibrate.hidden { display: none; }
+      #underlay-panel .up-hint { color: #8a7c6c; font-size: 10.5px; margin-top: 9px; line-height: 1.4; }
     </style>
   </head>
   <body>
@@ -307,6 +336,9 @@
         </div>
         <div class="group" id="export-group" title="Export your design (Pro)">
           <button id="export-btn" title="Export the model to OBJ (for Blender / SketchUp / CAD) or save as JSON">Export…</button>
+        </div>
+        <div class="group" id="underlay-group" title="Imported floor plan (trace over it)">
+          <button id="underlay-btn" title="Adjust the imported floor plan you're tracing over">Plan&nbsp;image…</button>
         </div>
         <span class="hint" id="toolhint">Select a starter or draw a room</span>
       </div>
@@ -386,6 +418,18 @@
       <button class="xp-btn" id="export-json">Download project (JSON)<small>Your lossless save — reload it here to keep editing</small></button>
       <div class="xp-hint">OBJ is an approximate massing export (openings, roof and furniture are noted, not baked). Not a fabrication or framing spec.</div>
     </div>
+    <div id="underlay-panel" role="dialog" aria-label="Imported floor plan">
+      <div class="up-title">Floor-plan underlay</div>
+      <div class="up-row">
+        <label for="underlay-opacity">Opacity</label>
+        <input id="underlay-opacity" type="range" min="0" max="100" step="5" value="50">
+        <span class="up-val" id="underlay-opacity-val">50%</span>
+      </div>
+      <button id="underlay-calibrate" title="Set the scale by drawing over a dimension you know (Pro)">Calibrate scale…</button>
+      <button id="underlay-remove" title="Remove the imported plan">Remove plan</button>
+      <div class="up-hint">Trace walls straight over the imported plan. <b>Calibrate</b> (Pro): click two points on a known dimension, then type its real length, and the plan rescales to match. The image is a display aid only — it is not saved with your home.</div>
+    </div>
+    <input type="file" id="plan-file" accept="image/png,image/jpeg,image/webp,image/gif" style="display:none">
     <div id="picker" aria-modal="true" role="dialog" aria-label="Choose a template">
       <div id="picker-card">
         <h2>Start a new home</h2>
