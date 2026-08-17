@@ -5,6 +5,7 @@
 import { wallLength, polygonArea, polygonCentroid, roomAtPoint } from '../core/model.js';
 import { measureDistance } from '../edit/measure.js';
 import { formatLength, formatArea } from '../core/units.js';
+import { underlayWorldRect } from '../core/underlay.js';
 import { TOOL } from './state.js';
 
 // A2 — which room should read as "hovered" for a given plan point + active tool.
@@ -23,6 +24,13 @@ export function createPlanCanvas(canvas, { project, controller, planView, state,
   const notifySelect = () => { if (onSelect) onSelect(); };
   let activeLevelId = levelId;                    // retargetable so the plan follows the active storey
   let hoveredId = null;                           // A2: room under the plan cursor (view state — never saved)
+  // D1 — the imported floor-plan underlay: a descriptor (core/underlay.js) + the loaded image.
+  // Pure DISPLAY state — it is drawn beneath the walls to trace over and NEVER reaches the save.
+  let underlay = null;         // frozen underlay descriptor or null
+  let underlayImg = null;      // the HTMLImageElement to drawImage(), or null
+  // D1 — scale calibration capture: the user clicks two points over a known dimension. Held here
+  // (view state) while capturing; on the second click we hand the two WORLD points back and exit.
+  let calibrate = null;        // { a:{x,z}|null, cursor:{x,z}|null, onComplete:(a,b)=>void } or null
   const level = () => project.levels.find((l) => l.id === activeLevelId) || project.levels[0];
   // Point the plan surface at a different storey (multi-level editing). The plan only ever
   // draws one level at a time — the storey the user is editing.
@@ -58,11 +66,45 @@ export function createPlanCanvas(canvas, { project, controller, planView, state,
     const w = canvas.clientWidth, h = canvas.clientHeight;
     ctx.clearRect(0, 0, w, h);
     ctx.fillStyle = '#efe9df'; ctx.fillRect(0, 0, w, h);
+    drawUnderlay();                 // D1: the traced floor plan sits beneath everything editable
     drawGrid(w, h);
     const lv = level();
     if (lv) { drawRooms(lv); drawWalls(lv); drawOpenings(lv); drawVertices(lv); }
     drawPreview();
     drawMeasure();
+    drawCalibrate();
+  }
+
+  // D1 — paint the imported floor plan as an axis-aligned underlay. The descriptor gives the
+  // image's world rectangle (core/underlay.js); we project its corners through the SAME planView
+  // the walls use, so the underlay pans/zooms locked to the model. Drawn at the descriptor's
+  // opacity so wall centrelines stay readable on top. No model read, no save touch.
+  function drawUnderlay() {
+    if (!underlay || !underlayImg) return;
+    const r = underlayWorldRect(underlay);
+    const tl = planView.worldToScreen({ x: r.minX, z: r.minZ });
+    const wpx = r.widthM * planView.vp.pxPerMeter;
+    const hpx = r.heightM * planView.vp.pxPerMeter;
+    if (!(wpx > 0) || !(hpx > 0)) return;
+    ctx.save();
+    ctx.globalAlpha = underlay.opacity;
+    try { ctx.drawImage(underlayImg, tl.px, tl.py, wpx, hpx); } catch { /* image not decodable yet */ }
+    ctx.restore();
+  }
+
+  // D1 — calibration overlay: a dashed rubber-band from the first click to the cursor (or the
+  // second click). Pure view feedback while the user marks a known dimension; issues no command.
+  function drawCalibrate() {
+    if (!calibrate || !calibrate.a) return;
+    const to = calibrate.b || calibrate.cursor;
+    if (!to) return;
+    const a = planView.worldToScreen(calibrate.a), b = planView.worldToScreen(to);
+    ctx.save();
+    ctx.setLineDash([6, 5]); ctx.lineWidth = 2; ctx.strokeStyle = '#2f6db0';
+    ctx.beginPath(); ctx.moveTo(a.px, a.py); ctx.lineTo(b.px, b.py); ctx.stroke();
+    ctx.setLineDash([]);
+    for (const p of [a, b]) { ctx.beginPath(); ctx.arc(p.px, p.py, 3.5, 0, Math.PI * 2); ctx.fillStyle = '#2f6db0'; ctx.fill(); }
+    ctx.restore();
   }
 
   // Room floors as subtle plan fills, each labelled with its computed floor area at the room
@@ -220,14 +262,44 @@ export function createPlanCanvas(canvas, { project, controller, planView, state,
     return true;
   }
 
+  // D1 — begin calibrating the underlay's scale. The next two plan clicks mark a known dimension;
+  // on the second we hand both WORLD points to onComplete (main.js asks for the real length and
+  // rescales the underlay). Pure view capture — no command, no model touch. Returns false if
+  // there is nothing to calibrate (no underlay imported yet).
+  function startCalibrate(onComplete) {
+    if (!underlay) return false;
+    calibrate = { a: null, b: null, cursor: null, onComplete };
+    return true;
+  }
+  function cancelCalibrate() { const was = !!calibrate; calibrate = null; if (was) draw(); return was; }
+  function isCalibrating() { return !!calibrate; }
+  // Feed one world point into the active calibration; returns true once two points are captured.
+  function calibratePoint(world) {
+    if (!calibrate) return false;
+    if (!calibrate.a) { calibrate.a = { x: world.x, z: world.z }; return false; }
+    calibrate.b = { x: world.x, z: world.z };
+    const { a, b, onComplete } = calibrate;
+    calibrate = null;                       // exit capture before firing the callback
+    if (onComplete) onComplete(a, b);
+    return true;
+  }
+
   // --- pointer wiring: DOM event -> world coords -> controller ---
   const worldAt = (e) => {
     const r = canvas.getBoundingClientRect();
     return planView.screenToWorld(e.clientX - r.left, e.clientY - r.top);
   };
-  canvas.addEventListener('pointerdown', (e) => { canvas.setPointerCapture(e.pointerId); controller.pointerDown(worldAt(e)); draw(); notifySelect(); });
-  canvas.addEventListener('pointermove', (e) => { const w = worldAt(e); updateHover(w); controller.pointerMove(w); draw(); });
-  canvas.addEventListener('pointerup', (e) => { controller.pointerUp(worldAt(e)); draw(); notifySelect(); });
+  canvas.addEventListener('pointerdown', (e) => {
+    // While calibrating, plan clicks mark the known dimension instead of editing the model.
+    if (calibrate) { canvas.setPointerCapture(e.pointerId); calibratePoint(worldAt(e)); draw(); return; }
+    canvas.setPointerCapture(e.pointerId); controller.pointerDown(worldAt(e)); draw(); notifySelect();
+  });
+  canvas.addEventListener('pointermove', (e) => {
+    const w = worldAt(e);
+    if (calibrate) { calibrate.cursor = w; draw(); return; }
+    updateHover(w); controller.pointerMove(w); draw();
+  });
+  canvas.addEventListener('pointerup', (e) => { if (calibrate) return; controller.pointerUp(worldAt(e)); draw(); notifySelect(); });
   // Drop the hover highlight when the cursor leaves the plan so no room stays warm off-canvas.
   canvas.addEventListener('pointerleave', () => { if (clearHover()) draw(); });
   // Double-click ends a wall chain (as before). When the SELECT tool is active it is ALSO the
@@ -245,5 +317,11 @@ export function createPlanCanvas(canvas, { project, controller, planView, state,
     draw, resize, frameModel, setLevel,
     // A2 hooks (also used by the headless harness): drive/read the hover highlight.
     updateHover, clearHover, getHoveredId: () => hoveredId,
+    // D1 underlay hooks: set/clear the traced floor plan + drive scale calibration (view state only).
+    setUnderlay: (descriptor, img) => { underlay = descriptor || null; if (img !== undefined) underlayImg = img || null; draw(); },
+    clearUnderlay: () => { underlay = null; underlayImg = null; if (calibrate) calibrate = null; draw(); },
+    getUnderlay: () => underlay,
+    hasUnderlay: () => !!(underlay && underlayImg),
+    startCalibrate, cancelCalibrate, isCalibrating, calibratePoint,
   };
 }

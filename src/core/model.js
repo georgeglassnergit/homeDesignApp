@@ -93,7 +93,7 @@ export function createRoom(points, opts = {}) {
 }
 
 export function createRoof(opts = {}) {
-  return {
+  const roof = {
     type: opts.type || DEFAULTS.roof.type,     // 'flat' | 'gable' | 'hip' (see core/roofShape.js)
     thickness: opts.thickness ?? DEFAULTS.roof.thickness,
     overhang: opts.overhang ?? DEFAULTS.roof.overhang,
@@ -101,6 +101,12 @@ export function createRoof(opts = {}) {
     ridge: opts.ridge || DEFAULTS.roof.ridge,  // 'auto'|'x'|'z' ridge orientation; only affects gable/hip
     material: opts.material || 'roof',
   };
+  // Per-slope overhangs (B2) are OPTIONAL: eave (sloped sides) vs. rake (gable/hip ends).
+  // Only carried when explicitly set, so a roof that never customises them serializes
+  // byte-identically to a pre-B2 save. Absent → both fall back to `overhang` (roofOverhangs).
+  if (opts.eaveOverhang != null) roof.eaveOverhang = opts.eaveOverhang;
+  if (opts.rakeOverhang != null) roof.rakeOverhang = opts.rakeOverhang;
+  return roof;
 }
 
 export function createFurniture(src, opts = {}) {
@@ -123,6 +129,45 @@ export function defaultMaterials() {
     ground: { color: '#cfc7ba', roughness: 1.0 },
     default:{ color: '#cccccc', roughness: 0.9 },
   };
+}
+
+// ---- E1 · materials library (activate the `materials-swatch` seam) ----------
+// A small, curated palette of surface finishes the user can apply to a wall or floor
+// from the inspector. This is PURE data (id, human label, plus the same color/roughness/
+// metalness shape `makeMaterialRegistry` already consumes) — no Three.js here; the view
+// layer turns a chosen id into a real material via the existing registry, unchanged.
+//
+// A finish is applied by `setElementMaterial` (edit/commands.js): the command points the
+// element's existing `material` key at the chosen id and, if that id isn't already in the
+// project's `materials` map, registers its definition there so the registry can resolve it.
+// Because the finish is stored under the element's ALREADY-EXISTING `material` field and any
+// added preset is removed again on undo, no new save field is introduced and old saves stay
+// byte-identical (the Phase 1 lossless contract holds — proven in the pure suite).
+export const MATERIAL_LIBRARY = Object.freeze([
+  { id: 'warm-white', label: 'Warm white', color: '#f3ece1', roughness: 0.90 },
+  { id: 'soft-grey',  label: 'Soft grey',  color: '#d8d6d1', roughness: 0.90 },
+  { id: 'oak',        label: 'Oak',        color: '#b9a58c', roughness: 0.95 },
+  { id: 'walnut',     label: 'Walnut',     color: '#6b4a32', roughness: 0.90 },
+  { id: 'red-brick',  label: 'Red brick',  color: '#a6512f', roughness: 0.95 },
+  { id: 'concrete',   label: 'Concrete',   color: '#9a9791', roughness: 0.85 },
+  { id: 'slate',      label: 'Slate',      color: '#5b5f66', roughness: 0.80 },
+  { id: 'sage',       label: 'Sage green', color: '#8a9a7b', roughness: 0.90 },
+  { id: 'deep-navy',  label: 'Deep navy',  color: '#3a4a63', roughness: 0.85 },
+  { id: 'terracotta', label: 'Terracotta', color: '#c06a44', roughness: 0.90 },
+].map(Object.freeze));
+
+const MATERIAL_LIBRARY_BY_ID = new Map(MATERIAL_LIBRARY.map((m) => [m.id, m]));
+
+// The library definition for an id, or null if it isn't a known finish. The returned object
+// is the frozen catalog entry (id + label + color/roughness); callers that register it into a
+// project's `materials` map should copy the render fields, not the id/label.
+export function materialDef(id) {
+  return MATERIAL_LIBRARY_BY_ID.get(id) || null;
+}
+
+// Is `id` a finish in the library? (Cheap membership test for the edit builder.)
+export function isLibraryMaterial(id) {
+  return MATERIAL_LIBRARY_BY_ID.has(id);
 }
 
 // ---- geometry helpers on the data (still no Three.js) ----------------------
@@ -303,6 +348,12 @@ export function validateProject(project) {
       if (!ROOF_TYPES.includes(lvl.roof.type)) errors.push(`level ${lvl.id}: unknown roof type ${lvl.roof.type}`);
       if (isPitched(lvl.roof.type) && !(lvl.roof.pitch > 0 && lvl.roof.pitch < 90)) errors.push(`level ${lvl.id}: roof pitch must be between 0 and 90 degrees`);
       if (lvl.roof.ridge != null && !RIDGE_MODES.includes(lvl.roof.ridge)) errors.push(`level ${lvl.id}: unknown roof ridge ${lvl.roof.ridge}`);
+      // Overhangs (uniform `overhang`, plus the optional per-slope B2 eave/rake) must be
+      // finite and non-negative when present. Absent per-slope fields are fine (old saves).
+      for (const k of ['overhang', 'eaveOverhang', 'rakeOverhang']) {
+        const v = lvl.roof[k];
+        if (v != null && !(Number.isFinite(v) && v >= 0)) errors.push(`level ${lvl.id}: roof ${k} must be a non-negative number`);
+      }
     }
   }
   return { ok: errors.length === 0, errors };

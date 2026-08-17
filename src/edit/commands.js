@@ -222,12 +222,16 @@ export function setLevelRoof(levelId, roof) {
   };
 }
 
-// Change a storey roof's shape (flat / gable / hip) and/or pitch. The prior roof
-// is captured whole for a byte-lossless undo (the Phase 1 guarantee). Only the
-// roof's `type`/`pitch`/`ridge` fields change — thickness, overhang and material carry
-// through untouched. Missing pitch is backfilled to the default so a roof that
-// pre-dates the pitch field renders a sane slope once switched to gable/hip.
-export function setRoofType(levelId, { type, pitch, ridge } = {}) {
+// Change a storey roof's shape (flat / gable / hip), pitch, ridge, and/or overhang.
+// The prior roof is captured whole for a byte-lossless undo (the Phase 1 guarantee):
+// undo restores the ORIGINAL roof object, so any per-slope field this command adds is
+// cleanly discarded — an old save that never had eave/rake round-trips unchanged.
+// Fields not named in the patch carry through untouched. Missing pitch is backfilled to
+// the default so a roof that pre-dates the pitch field renders a sane slope once pitched.
+//   overhang     — the uniform overhang (also the fallback for the two below)
+//   eaveOverhang — B2: overhang at the eaves (sloped sides); OPTIONAL, per-slope
+//   rakeOverhang — B2: overhang at the rakes (gable/hip ends); OPTIONAL, per-slope
+export function setRoofType(levelId, { type, pitch, ridge, overhang, eaveOverhang, rakeOverhang } = {}) {
   let prev;
   return {
     name: 'Set roof type',
@@ -239,6 +243,9 @@ export function setRoofType(levelId, { type, pitch, ridge } = {}) {
       if (type !== undefined) l.roof.type = type;
       if (pitch !== undefined) l.roof.pitch = pitch;
       if (ridge !== undefined) l.roof.ridge = ridge;
+      if (overhang !== undefined) l.roof.overhang = overhang;
+      if (eaveOverhang !== undefined) l.roof.eaveOverhang = eaveOverhang;
+      if (rakeOverhang !== undefined) l.roof.rakeOverhang = rakeOverhang;
       if (l.roof.pitch === undefined) l.roof.pitch = DEFAULT_ROOF_PITCH;
     },
     undo(project) {
@@ -319,6 +326,46 @@ export function setElementLabel(levelId, kind, id, label) {
       if (!el) return;
       if (had) el.label = prev;
       else delete el.label;
+    },
+  };
+}
+
+// Apply a material finish to a wall or floor (the E1 `materials-swatch` seam). Every element
+// already carries a `material` key naming an entry in the project's `materials` map, so this
+// command never adds a NEW save field — it only repoints that existing key and, when the chosen
+// finish isn't yet in the map, registers its definition (from the library catalog) so the view
+// registry can resolve it. Byte-lossless undo in both directions: it restores the prior key and,
+// if THIS command added the finish's definition, deletes it again (adding then deleting a key
+// restores the map's insertion order, so serialize→deserialize→serialize is byte-identical).
+// Registering only on first use keeps saves minimal (unused library finishes are never stored),
+// and the add/remove is strictly LIFO with history, so a finish shared by two elements survives
+// undo of the second and is removed only when the first (which added it) is undone.
+// `kind` picks the finder: 'wall' → findWall, 'room' → findRoom (a room's floor material).
+export function setElementMaterial(levelId, kind, id, materialId, def = null) {
+  const findEl = (project) => {
+    const l = findLevel(project, levelId);
+    if (!l) return null;
+    return kind === 'wall' ? findWall(l, id) : findRoom(l, id);
+  };
+  let prev, addedKey = null;
+  return {
+    name: kind === 'wall' ? 'Set wall material' : 'Set floor material',
+    do(project) {
+      const el = findEl(project);
+      if (!el) throw new Error(`setElementMaterial: missing ${kind} ${id} on level ${levelId}`);
+      if (!project.materials) project.materials = {};
+      // Register the finish's definition on first use so the render registry can resolve the key.
+      if (def && !Object.prototype.hasOwnProperty.call(project.materials, materialId)) {
+        project.materials[materialId] = { color: def.color, roughness: def.roughness, ...(def.metalness != null ? { metalness: def.metalness } : {}) };
+        addedKey = materialId;
+      }
+      prev = el.material;
+      el.material = materialId;
+    },
+    undo(project) {
+      const el = findEl(project);
+      if (el) el.material = prev;
+      if (addedKey && project.materials) delete project.materials[addedKey];
     },
   };
 }

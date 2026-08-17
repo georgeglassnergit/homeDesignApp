@@ -19,8 +19,10 @@ export const FEATURE_TIERS = Object.freeze({
   'orbit-walkthrough': MODE.SIMPLE,
   'templates':         MODE.SIMPLE,
   'materials-swatch':  MODE.SIMPLE,
+  'plan-import':       MODE.SIMPLE,   // D1: import a raster floor plan as a trace-over underlay
   // revealed in Pro
   'exact-dimensions':  MODE.PRO,
+  'plan-calibrate':    MODE.PRO,      // D1: calibrate the underlay's scale by drawing a known dimension
   'room-rename':       MODE.PRO,      // rename a selected room from the inspector (undoable)
   'element-label':     MODE.PRO,      // A3: label a selected wall/opening (optional, undoable)
   'snapping-constraints': MODE.PRO,

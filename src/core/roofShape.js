@@ -52,13 +52,44 @@ export function wallBounds(level) {
   return { x0, x1, z0, z1 };
 }
 
+// Resolve a roof's effective EAVE and RAKE overhangs (metres), backfilling both
+// from the legacy uniform `overhang` when the per-slope fields are absent. This is
+// what keeps B2 lossless: a roof carrying only `overhang` yields eave === rake ===
+// overhang, so its footprint — and every downstream vertex — is byte-identical to
+// pre-B2 behaviour, and an old save (no eave/rake fields) still validates.
+//   eave — overhang at the EAVES (the two sloped sides, PERPENDICULAR to the ridge)
+//   rake — overhang at the RAKES (the gable/hip ends, ALONG the ridge)
+export function roofOverhangs(roof) {
+  const base = (roof && roof.overhang) || 0;
+  const eave = (roof && roof.eaveOverhang != null) ? roof.eaveOverhang : base;
+  const rake = (roof && roof.rakeOverhang != null) ? roof.rakeOverhang : base;
+  return { eave, rake };
+}
+
 // Axis-aligned footprint of a level's walls, expanded by the roof overhang.
 // Returns null when the level has no walls (nothing to cover).
+//
+// A FLAT roof overhangs uniformly on all four sides (the Phase-1 behaviour, unchanged).
+// A PITCHED roof (B2) distinguishes the EAVE overhang (perpendicular to the ridge) from
+// the RAKE overhang (along the ridge) so the two can differ. The ridge axis is resolved
+// from the bare WALL bounds — deterministic and independent of the overhang — so the view
+// layer can resolve it the same way and pass a concrete ridge to roofSolid/gableInfill,
+// keeping the footprint's per-slope expansion and the shell in agreement when eave ≠ rake.
 export function roofFootprint(level) {
   const b = wallBounds(level);
   if (!b) return null;
-  const o = (level.roof && level.roof.overhang) || 0;
-  return { x0: b.x0 - o, x1: b.x1 + o, z0: b.z0 - o, z1: b.z1 + o };
+  const roof = (level && level.roof) || {};
+  if (!isPitched(roof.type)) {
+    const o = roof.overhang || 0;
+    return { x0: b.x0 - o, x1: b.x1 + o, z0: b.z0 - o, z1: b.z1 + o };
+  }
+  const { eave, rake } = roofOverhangs(roof);
+  const ridgeAlongX = resolveRidgeAlongX(b, roof.ridge);
+  // Eaves run parallel to the ridge and overhang PERPENDICULAR to it; rakes are the
+  // ends and overhang ALONG the ridge. Map that onto the X/Z expansion of the box.
+  const ox = ridgeAlongX ? rake : eave;   // ±X expansion
+  const oz = ridgeAlongX ? eave : rake;   // ±Z expansion
+  return { x0: b.x0 - ox, x1: b.x1 + ox, z0: b.z0 - oz, z1: b.z1 + oz };
 }
 
 // Vertical rise (m) for a horizontal run (m) at a given pitch (degrees).

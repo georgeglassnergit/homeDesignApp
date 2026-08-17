@@ -2,19 +2,23 @@ import { createViewer } from './viewer/viewer.js';
 import { createWalkController } from './viewer/walkCamera.js';
 import { buildScene, sceneBounds, rebuildGeometry } from './build/sceneBuilder.js';
 import { serialize, deserialize, validateProject, projectCounts, createLevel, createRoof, findLevel, roomAtPoint, polygonCentroid } from './core/model.js';
+import { roofOverhangs } from './core/roofShape.js';
 import { createAppState, availableTools, isAvailable, MODE, TOOL, VIEW, CAMERA } from './app/state.js';
 import { cutawayHiddenWalls } from './viewer/cutaway.js';
 import { formatLength, UNIT } from './core/units.js';
-import { describeSelection, describeHomeSummary, buildDimensionEdit, buildRoomRename, buildElementLabel } from './app/inspector.js';
+import { describeSelection, describeHomeSummary, buildDimensionEdit, buildRoomRename, buildElementLabel, buildSetMaterial } from './app/inspector.js';
 import { History } from './edit/history.js';
 import { ToolController } from './edit/tools.js';
 import { createPlanView } from './edit/planView.js';
 import { raycast, eventToNDC } from './edit/picking.js';
 import { createPlanCanvas } from './app/planCanvas.js';
+import { createUnderlay, calibrateUnderlay, withOpacity } from './core/underlay.js';
+import { parseLength } from './core/units.js';
 import { STARTERS } from './templates/starters.js';
 import { loadTemplate, setView, addLevel, removeLevel, renameLevel, setLevelHeight, setLevelRoof, setRoofType, composite } from './edit/commands.js';
 import { createDirtyTracker } from './app/dirty.js';
 import { planThumbnailSVG } from './app/thumbnail.js';
+import { exportObj, exportProjectJson, exportBaseName } from './core/exportObj.js';
 
 const spike = { booted: false, built: false, sceneMeshes: 0, roundTripOk: false, counts: null, error: null };
 window.__app = spike;
@@ -159,11 +163,22 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
         ? `<label class="ins-row"><span>${f.label}</span>`
           + `<input class="ins-field" data-key="${f.key}" value="${f.text}" spellcheck="false" autocomplete="off"></label>`
         : `<div class="ins-row"><span>${f.label}</span><b>${f.text}</b></div>`).join('');
+      // E1 materials swatch: a Simple-tier row of clickable finish swatches for a wall/floor. The
+      // current finish is marked selected; clicking one commits setElementMaterial (undoable).
+      const matRow = desc.materials
+        ? `<div class="ins-row ins-mat"><span>${desc.materials.label}</span>`
+          + `<div class="ins-swatches">`
+          + desc.materials.options.map((o) =>
+              `<button type="button" class="ins-swatch${o.id === desc.materials.current ? ' sel' : ''}" `
+              + `data-material="${esc(o.id)}" style="--sw:${esc(o.color)}" `
+              + `title="${esc(o.label)}" aria-label="${esc(o.label)}"></button>`).join('')
+          + `</div></div>`
+        : '';
       const foot = desc.editable
         ? `<div class="ins-hint">Type an exact size (e.g. 3.2m or 10'6") and press Enter</div>`
         : `<div class="ins-hint">${desc.hint || 'Switch to <b>Pro</b> to edit exact dimensions'}</div>`;
       insBox.className = desc.editable ? 'editable' : '';
-      insBox.innerHTML = `<div class="ins-title">${esc(desc.title)}</div>${nameRow}${rows}${foot}<div class="ins-msg" id="ins-msg"></div>`;
+      insBox.innerHTML = `<div class="ins-title">${esc(desc.title)}</div>${nameRow}${rows}${matRow}${foot}<div class="ins-msg" id="ins-msg"></div>`;
       if (desc.editable) {
         insBox.querySelectorAll('.ins-field:not(.ins-name)').forEach((inp) => {
           inp.addEventListener('keydown', (e) => {
@@ -185,6 +200,24 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
           nameInp.addEventListener('blur', () => commitRename(nameInp.value));
         }
       }
+      if (desc.materials) {
+        insBox.querySelectorAll('.ins-swatch').forEach((btn) => {
+          btn.addEventListener('click', (e) => { e.preventDefault(); commitMaterial(btn.dataset.material); });
+        });
+      }
+    }
+
+    // Commit a material-finish change through history (E1 materials-swatch seam). A no-op (the
+    // finish already applied) pushes nothing; setElementMaterial only repoints the element's
+    // existing `material` key (and registers a library finish on first use), so no re-validate/
+    // rollback dance is needed. refresh() rebuilds geometry, so the new colour shows immediately.
+    function commitMaterial(materialId) {
+      const res = buildSetMaterial(project, app.selection, materialId);
+      if (res.unchanged) return;
+      const msg = $('ins-msg');
+      if (res.error) { if (msg) msg.textContent = res.error; return; }
+      history.execute(res.command);
+      refresh();                     // re-derive materials registry + re-render the swatch state
     }
 
     // Dispatch a rename-slot commit to the right builder for the current selection: a room
@@ -497,6 +530,10 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
     const roofTypeButtons = [...document.querySelectorAll('#roof-types button')];
     const roofRidgeRow = $('roof-ridge-row');
     const roofRidgeButtons = [...document.querySelectorAll('#roof-ridges button')];
+    // B2 per-slope overhangs — sliders read/write in centimetres; the model stores metres.
+    const roofEaveRow = $('roof-eave-row'), roofEaveInp = $('roof-eave'), roofEaveVal = $('roof-eave-val');
+    const roofRakeRow = $('roof-rake-row'), roofRakeInp = $('roof-rake'), roofRakeVal = $('roof-rake-val');
+    const cm = (m) => Math.round(m * 100);            // metres → whole cm (for the sliders)
 
     // The roof caps the TOP storey (multi-level moves it up as storeys stack).
     function roofBearingLevel() {
@@ -524,6 +561,15 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       // Ridge direction only means something for a pitched roof — show/enable it only then.
       if (roofRidgeRow) roofRidgeRow.classList.toggle('hidden', !pitched);
       roofRidgeButtons.forEach((b) => { b.classList.toggle('active', b.dataset.ridge === ridge); b.disabled = !pitched; });
+      // Per-slope overhangs are a pitched-roof concept too (a flat slab keeps its uniform
+      // overhang). Show the effective eave/rake — backfilled from the legacy `overhang`.
+      const { eave, rake } = roofOverhangs(roof || {});
+      if (roofEaveRow) roofEaveRow.classList.toggle('hidden', !pitched);
+      if (roofRakeRow) roofRakeRow.classList.toggle('hidden', !pitched);
+      if (roofEaveInp) { roofEaveInp.value = cm(eave); roofEaveInp.disabled = !pitched; }
+      if (roofEaveVal) roofEaveVal.textContent = pitched ? `${cm(eave)}` : '—';
+      if (roofRakeInp) { roofRakeInp.value = cm(rake); roofRakeInp.disabled = !pitched; }
+      if (roofRakeVal) roofRakeVal.textContent = pitched ? `${cm(rake)}` : '—';
       roofBtn.classList.toggle('armed', pitched);
       roofBtn.disabled = !roof;
     }
@@ -534,6 +580,16 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       roofPitchInp.addEventListener('keydown', (e) => e.stopPropagation());
       roofPitchInp.addEventListener('input', () => { if (roofPitchVal) roofPitchVal.textContent = `${roofPitchInp.value}°`; });
       roofPitchInp.addEventListener('change', () => applyRoof({ pitch: parseFloat(roofPitchInp.value) }));
+    }
+    if (roofEaveInp) {
+      roofEaveInp.addEventListener('keydown', (e) => e.stopPropagation());
+      roofEaveInp.addEventListener('input', () => { if (roofEaveVal) roofEaveVal.textContent = roofEaveInp.value; });
+      roofEaveInp.addEventListener('change', () => applyRoof({ eaveOverhang: parseInt(roofEaveInp.value, 10) / 100 }));
+    }
+    if (roofRakeInp) {
+      roofRakeInp.addEventListener('keydown', (e) => e.stopPropagation());
+      roofRakeInp.addEventListener('input', () => { if (roofRakeVal) roofRakeVal.textContent = roofRakeInp.value; });
+      roofRakeInp.addEventListener('change', () => applyRoof({ rakeOverhang: parseInt(roofRakeInp.value, 10) / 100 }));
     }
     function positionRoofPanel() {
       const r = roofBtn.getBoundingClientRect();
@@ -555,11 +611,180 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       else toggleRoofPanel(false);
     }
 
+    // --- Export (Pro seam: 'ifc-export') — pure model → interchange, downloaded client-side.
+    // OBJ (building massing + companion MTL) for other 3D tools, and the project's own lossless
+    // JSON save. All the geometry math is pure core/exportObj.js; this just wires the download.
+    const exportGroup = $('export-group'), exportBtn = $('export-btn'), exportPanel = $('export-panel');
+    // Trigger a client-side download of some text as a file (Blob + object URL + transient anchor).
+    function downloadText(filename, text, mime = 'text/plain') {
+      const blob = new Blob([text], { type: `${mime};charset=utf-8` });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+    }
+    function doExportObj() {
+      const base = exportBaseName(project);
+      const { obj, mtl } = exportObj(project, { mtlName: `${base}.mtl` });
+      downloadText(`${base}.obj`, obj, 'model/obj');
+      downloadText(`${base}.mtl`, mtl, 'text/plain');
+      toggleExportPanel(false);
+    }
+    function doExportJson() {
+      downloadText(`${exportBaseName(project)}.json`, exportProjectJson(project), 'application/json');
+      toggleExportPanel(false);
+    }
+    function positionExportPanel() {
+      const r = exportBtn.getBoundingClientRect();
+      exportPanel.style.left = Math.max(8, Math.min(r.left, innerWidth - 266)) + 'px';
+      exportPanel.style.top = (r.bottom + 6) + 'px';
+    }
+    function toggleExportPanel(force) {
+      const open = force === undefined ? !exportPanel.classList.contains('open') : force;
+      if (open) positionExportPanel();
+      exportPanel.classList.toggle('open', open);
+    }
+    exportBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleExportPanel(); });
+    exportPanel.addEventListener('click', (e) => e.stopPropagation());
+    addEventListener('click', () => toggleExportPanel(false));   // click-away closes
+    $('export-obj').addEventListener('click', (e) => { e.stopPropagation(); doExportObj(); });
+    $('export-json').addEventListener('click', (e) => { e.stopPropagation(); doExportJson(); });
+    function syncExportSeam() {
+      const on = isAvailable('ifc-export', app.mode);
+      exportGroup.classList.toggle('on', on);
+      if (!on) toggleExportPanel(false);
+    }
+
+    // --- D1: import a plan (trace an uploaded floor plan) --------------------------------------
+    // A raster floor plan is loaded as a plan-canvas UNDERLAY to draw walls over. It is pure
+    // DISPLAY state (never saved with the geometry) — main.js holds the current descriptor + the
+    // loaded image + the object URL to revoke; the plan surface draws it and captures calibration
+    // clicks. Import is un-tiered ('plan-import'); calibration is Pro ('plan-calibrate').
+    const underlayGroup = $('underlay-group'), underlayBtn = $('underlay-btn'), underlayPanel = $('underlay-panel');
+    const underlayFile = $('plan-file');
+    const underlayOpacity = $('underlay-opacity'), underlayOpacityVal = $('underlay-opacity-val');
+    const underlayCalibrateBtn = $('underlay-calibrate'), underlayRemoveBtn = $('underlay-remove');
+    let underlayDesc = null;      // the current underlay descriptor (core/underlay.js) or null
+    let underlayImg = null;       // the loaded HTMLImageElement or null
+    let underlayUrl = null;       // the object URL backing underlayImg (revoked on replace/remove)
+
+    // Turn a loaded image into an underlay centred on the current plan viewport (so it lands where
+    // the user is looking), default ~10 m wide until they calibrate. Replaces any prior underlay.
+    function importUnderlayFromImage(img) {
+      underlayImg = img;
+      underlayDesc = createUnderlay({
+        imgWidth: img.naturalWidth || img.width, imgHeight: img.naturalHeight || img.height,
+        center: { x: planView.vp.center.x, z: planView.vp.center.z },
+        opacity: underlayOpacity ? Number(underlayOpacity.value) / 100 : 0.5,
+      });
+      plan.setUnderlay(underlayDesc, underlayImg);
+      syncUnderlaySeam();
+      toggleUnderlayPanel(true);
+      hint('Floor plan imported — trace walls over it. Use “Plan image…” to calibrate its scale.');
+    }
+    // Load an image from a URL (object URL in the app; a data: URL from the headless harness).
+    function loadUnderlayUrl(url, revokePrev = true) {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => {
+          if (revokePrev && underlayUrl) { try { URL.revokeObjectURL(underlayUrl); } catch { /* data URL */ } }
+          underlayUrl = url;
+          importUnderlayFromImage(img);
+          resolve(underlayDesc);
+        };
+        img.onerror = () => reject(new Error('could not load image'));
+        img.src = url;
+      });
+    }
+    function openUnderlayPicker() { if (underlayFile) underlayFile.click(); }
+    if (underlayFile) underlayFile.addEventListener('change', () => {
+      const f = underlayFile.files && underlayFile.files[0];
+      if (!f) return;
+      loadUnderlayUrl(URL.createObjectURL(f)).catch(() => hint('Sorry — that image could not be loaded.'));
+      underlayFile.value = '';   // allow re-importing the same file
+    });
+
+    function removeUnderlay() {
+      plan.clearUnderlay();
+      if (underlayUrl) { try { URL.revokeObjectURL(underlayUrl); } catch { /* data URL */ } }
+      underlayDesc = null; underlayImg = null; underlayUrl = null;
+      cancelCalibrate();
+      syncUnderlaySeam();
+      toggleUnderlayPanel(false);
+    }
+
+    // Apply a finished calibration: two world clicks over a feature of known real length -> rescale
+    // the underlay (anchored at the first click so traced content stays put). Pure math; display only.
+    function applyCalibration(a, b, knownMeters) {
+      if (!underlayDesc || !(knownMeters > 0)) return null;
+      underlayDesc = calibrateUnderlay(underlayDesc, a, b, knownMeters);
+      plan.setUnderlay(underlayDesc, underlayImg);
+      return underlayDesc;
+    }
+    function armCalibrate() {
+      if (!plan.hasUnderlay() || !isAvailable('plan-calibrate', app.mode)) return false;
+      const ok = plan.startCalibrate((a, b) => {
+        underlayCalibrateBtn.classList.remove('armed');
+        const raw = (typeof prompt === 'function')
+          ? prompt('How long is that dimension in real life? (e.g. 3.6 m or 12\')') : null;
+        const meters = raw != null ? parseLength(raw, app.units) : NaN;
+        if (meters > 0) { applyCalibration(a, b, meters); hint('Scale calibrated to the imported plan.'); }
+        else { plan.draw(); hint('Calibration cancelled.'); }
+      });
+      if (ok) { underlayCalibrateBtn.classList.add('armed'); toggleUnderlayPanel(false); hint('Click two points on a dimension you know (e.g. a doorway), then type its real length.'); }
+      return ok;
+    }
+    function cancelCalibrate() {
+      if (underlayCalibrateBtn) underlayCalibrateBtn.classList.remove('armed');
+      return plan.cancelCalibrate();
+    }
+
+    if (underlayOpacity) {
+      underlayOpacity.addEventListener('keydown', (e) => e.stopPropagation());
+      underlayOpacity.addEventListener('input', () => {
+        if (underlayOpacityVal) underlayOpacityVal.textContent = `${underlayOpacity.value}%`;
+        if (underlayDesc) { underlayDesc = withOpacity(underlayDesc, Number(underlayOpacity.value) / 100); plan.setUnderlay(underlayDesc, underlayImg); }
+      });
+    }
+    if (underlayCalibrateBtn) underlayCalibrateBtn.addEventListener('click', (e) => { e.stopPropagation(); armCalibrate(); });
+    if (underlayRemoveBtn) underlayRemoveBtn.addEventListener('click', (e) => { e.stopPropagation(); removeUnderlay(); });
+
+    function positionUnderlayPanel() {
+      const r = underlayBtn.getBoundingClientRect();
+      underlayPanel.style.left = Math.max(8, Math.min(r.left, innerWidth - 256)) + 'px';
+      underlayPanel.style.top = (r.bottom + 6) + 'px';
+    }
+    function toggleUnderlayPanel(force) {
+      const open = force === undefined ? !underlayPanel.classList.contains('open') : force;
+      if (open) { renderUnderlayPanel(); positionUnderlayPanel(); }
+      underlayPanel.classList.toggle('open', open);
+    }
+    underlayBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleUnderlayPanel(); });
+    underlayPanel.addEventListener('click', (e) => e.stopPropagation());
+    addEventListener('click', () => toggleUnderlayPanel(false));   // click-away closes
+
+    function renderUnderlayPanel() {
+      if (underlayDesc && underlayOpacity) {
+        underlayOpacity.value = String(Math.round(underlayDesc.opacity * 100));
+        if (underlayOpacityVal) underlayOpacityVal.textContent = `${underlayOpacity.value}%`;
+      }
+      // calibration is the Pro part of D1 — hide the button in Simple (the seam).
+      if (underlayCalibrateBtn) underlayCalibrateBtn.classList.toggle('hidden', !isAvailable('plan-calibrate', app.mode));
+    }
+    // The "Plan image…" group only appears once a plan is imported (nothing to adjust before then).
+    function syncUnderlaySeam() {
+      const on = plan.hasUnderlay();
+      underlayGroup.classList.toggle('on', on);
+      if (on) renderUnderlayPanel();
+      else toggleUnderlayPanel(false);
+    }
+
     // --- Simple / Pro mode toggle (the single gate the whole UI reads from) ---
     const modeButtons = [...document.querySelectorAll('#modes button')];
     const syncModeButtons = () => modeButtons.forEach((b) => b.classList.toggle('active', b.dataset.mode === app.mode));
     modeButtons.forEach((b) => b.addEventListener('click', () => {
-      app.setMode(b.dataset.mode); syncModeButtons(); syncSnapSeam(); syncLevelSeam(); syncRoofSeam(); syncMeasureSeam(); renderInspector(); updateStatus();
+      app.setMode(b.dataset.mode); syncModeButtons(); syncSnapSeam(); syncLevelSeam(); syncRoofSeam(); syncMeasureSeam(); syncExportSeam(); syncUnderlaySeam(); renderInspector(); updateStatus();
     }));
 
     // --- display units toggle (m ↔ ft-in) — storage stays metric; this is display only ---
@@ -688,11 +913,19 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       card.addEventListener('click', () => pick(s.id));
       grid.appendChild(card);
     }
-    // Deferred onboarding tiles — RoomSketcher's blank / template / import / outsource
-    // pattern; import + outsource are Phase 3+, shown disabled so the roadmap reads.
+    // Onboarding tiles — RoomSketcher's blank / template / import / outsource pattern.
+    // D1: "Import a plan" is now LIVE (loads a floor-plan underlay to trace over); "Outsource"
+    // stays a Phase 3+ coming-soon tile so the roadmap still reads.
+    {
+      const imp = document.createElement('button');
+      imp.className = 'tpl-card'; imp.id = 'tpl-import'; imp.title = 'Import a floor plan image and trace over it';
+      imp.innerHTML = `<div class="thumb">${planThumbnailSVG({ levels: [] })}</div>`
+        + `<div class="name">Import a plan</div><div class="desc">Trace an uploaded floor plan.</div>`;
+      imp.addEventListener('click', () => { closePicker(); openUnderlayPicker(); });
+      grid.appendChild(imp);
+    }
     for (const soon of [
-      { label: 'Import a plan', desc: 'Trace an uploaded floor plan.' },
-      { label: 'Outsource',     desc: 'Have your home drawn for you.' },
+      { label: 'Outsource', desc: 'Have your home drawn for you.' },
     ]) {
       const card = document.createElement('button');
       card.className = 'tpl-card'; card.disabled = true;
@@ -716,7 +949,7 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
     // --- keyboard: Esc closes the picker / ends a wall run, Del removes, Ctrl+Z/Y undo/redo ---
     addEventListener('keydown', (e) => {
       if (pickerEl.classList.contains('open')) { if (e.key === 'Escape') closePicker(); return; }
-      if (e.key === 'Escape') { if (app.camera === CAMERA.WALK) setCamera(CAMERA.ORBIT); else { controller.finishChain(); plan.draw(); } }
+      if (e.key === 'Escape') { if (plan.isCalibrating()) { cancelCalibrate(); hint('Calibration cancelled.'); } else if (app.camera === CAMERA.WALK) setCamera(CAMERA.ORBIT); else { controller.finishChain(); plan.draw(); } }
       else if (e.key === 'Delete' || e.key === 'Backspace') { controller.deleteSelection(); }
       else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? controller.redo() : controller.undo(); }
       else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { e.preventDefault(); controller.redo(); }
@@ -735,6 +968,8 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
     syncLevelSeam();
     syncRoofSeam();
     syncMeasureSeam();
+    syncExportSeam();
+    syncUnderlaySeam();
     renderLevels();
     renderInspector();
     updateStatus();
@@ -770,7 +1005,19 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
         const loc = describeSelection(project, app.selection, { mode: app.mode, units: app.units });
         return { title: loc ? loc.title : null, rename: loc ? loc.rename : null, msg: $('ins-msg') ? $('ins-msg').textContent : '' };
       },
-      __setMode: (m) => { app.setMode(m); syncModeButtons(); syncSnapSeam(); syncLevelSeam(); syncRoofSeam(); syncMeasureSeam(); renderInspector(); updateStatus(); },
+      // E1: apply a material finish to the selected wall/floor. Commits through the same builder
+      // the swatch UI uses, then reports the element's stored material + the descriptor slot so the
+      // harness can prove the model updated (and that the finish was registered in project.materials).
+      __setMaterial: (materialId) => {
+        commitMaterial(materialId);
+        const loc = describeSelection(project, app.selection, { mode: app.mode, units: app.units });
+        const sel = app.selection;
+        let stored = null;
+        if (sel && sel.kind === 'wall') { for (const l of project.levels) { const w = l.walls.find((x) => x.id === sel.id); if (w) stored = w.material; } }
+        else if (sel && sel.kind === 'room') { for (const l of project.levels) { const r = l.rooms.find((x) => x.id === sel.id); if (r) stored = r.material; } }
+        return { stored, materials: loc ? loc.materials : null, registered: !!(project.materials && project.materials[materialId]), msg: $('ins-msg') ? $('ins-msg').textContent : '' };
+      },
+      __setMode: (m) => { app.setMode(m); syncModeButtons(); syncSnapSeam(); syncLevelSeam(); syncRoofSeam(); syncMeasureSeam(); syncExportSeam(); syncUnderlaySeam(); renderInspector(); updateStatus(); },
       __setUnits: (u) => { app.setUnits(u); syncUnitButtons(); renderInspector(); },
       // snapping/constraint seam handles (deterministic driving from the headless harness)
       __snap: () => app.snap, __setSnap: (partial) => { app.setSnap(partial); syncSnapControls(); plan.draw(); return app.snap; },
@@ -800,9 +1047,45 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       __setLevelHeight: (id, h) => { commitLevelHeight(id, String(h)); return project.levels.find((l) => l.id === id)?.height; },
       __renameLevel: (id, name) => { commitLevelName(id, name); return project.levels.find((l) => l.id === id)?.name; },
       // roof-editor (gable/hip) seam handles — deterministic driving from the headless harness
-      __roof: () => { const r = (roofBearingLevel() || {}).roof; return r ? { levelId: roofBearingLevel().id, type: r.type, pitch: r.pitch, ridge: r.ridge } : null; },
-      __setRoofType: (patch) => { applyRoof(patch); const r = (roofBearingLevel() || {}).roof; return r ? { type: r.type, pitch: r.pitch, ridge: r.ridge } : null; },
+      __roof: () => { const r = (roofBearingLevel() || {}).roof; return r ? { levelId: roofBearingLevel().id, type: r.type, pitch: r.pitch, ridge: r.ridge, overhang: r.overhang, eaveOverhang: r.eaveOverhang, rakeOverhang: r.rakeOverhang } : null; },
+      __setRoofType: (patch) => { applyRoof(patch); const r = (roofBearingLevel() || {}).roof; return r ? { type: r.type, pitch: r.pitch, ridge: r.ridge, overhang: r.overhang, eaveOverhang: r.eaveOverhang, rakeOverhang: r.rakeOverhang } : null; },
       __roofSeamVisible: () => roofGroup.classList.contains('on'),
+      // export (Pro-seam 'ifc-export') handles — run the pure exporter over the live project and
+      // report the OBJ/MTL text + counts + warnings so the harness can verify without downloading.
+      __exportSeamVisible: () => exportGroup.classList.contains('on'),
+      __exportObj: () => exportObj(project, { mtlName: `${exportBaseName(project)}.mtl` }),
+      __exportJson: () => exportProjectJson(project),
+      // D1: import-a-plan underlay handles — deterministic driving from the headless harness.
+      // A file dialog can't open headlessly, so __importUnderlay loads a data: URL directly (the
+      // same code path the file-input change handler runs). Returns the descriptor + world rect.
+      __importUnderlay: (dataUrl) => loadUnderlayUrl(dataUrl, false).then(() => window.__underlay()),
+      __underlay: () => {
+        if (!plan.hasUnderlay()) return null;
+        const u = plan.getUnderlay();
+        const rect = { widthM: u.imgWidth * u.metersPerPixel, heightM: u.imgHeight * u.metersPerPixel };
+        return { imgWidth: u.imgWidth, imgHeight: u.imgHeight, metersPerPixel: u.metersPerPixel, center: u.center, opacity: u.opacity, widthM: rect.widthM, heightM: rect.heightM };
+      },
+      __underlayGroupVisible: () => underlayGroup.classList.contains('on'),
+      __underlayCalibrateVisible: () => !!(underlayCalibrateBtn && !underlayCalibrateBtn.classList.contains('hidden')),
+      __setUnderlayOpacity: (pct) => { if (!underlayOpacity) return null; underlayOpacity.value = String(pct); underlayOpacity.dispatchEvent(new Event('input')); return plan.getUnderlay() ? plan.getUnderlay().opacity : null; },
+      __removeUnderlay: () => { removeUnderlay(); return { hasUnderlay: plan.hasUnderlay(), groupVisible: underlayGroup.classList.contains('on') }; },
+      // Drive the real two-click calibration capture (bypassing the prompt): arm calibration with a
+      // preset known length, then feed the two plan points the way the canvas handler does.
+      __calibrateUnderlay: (ax, az, bx, bz, meters) => {
+        if (!plan.hasUnderlay()) return null;
+        plan.startCalibrate((a, b) => applyCalibration(a, b, meters));
+        plan.calibratePoint({ x: ax, z: az });
+        const captured = plan.calibratePoint({ x: bx, z: bz });
+        const u = plan.getUnderlay();
+        return { captured, metersPerPixel: u.metersPerPixel, center: u.center, undo: history.undoStack.length, selection: app.selection };
+      },
+      __calibrateWorldSpan: (px1, pv1, px2, pv2) => {
+        // helper for the probe: world distance between two IMAGE pixels under the current underlay
+        const u = plan.getUnderlay(); if (!u) return null;
+        const toW = (px, pv) => ({ x: u.center.x + (px - u.imgWidth / 2) * u.metersPerPixel, z: u.center.z + (pv - u.imgHeight / 2) * u.metersPerPixel });
+        const a = toW(px1, pv1), b = toW(px2, pv2);
+        return Math.hypot(b.x - a.x, b.z - a.z);
+      },
       // measure-tool (Pro-seam ruler) handles — deterministic driving from the headless harness
       __setTool: (t) => { controller.setTool(t); syncToolButtons(); hint(HINTS[app.activeTool] || ''); plan.draw(); return app.activeTool; },
       __measureSeamVisible: () => !!(measureBtn && measureBtn.classList.contains('on')),
