@@ -20,6 +20,7 @@ export const FEATURE_TIERS = Object.freeze({
   'templates':         MODE.SIMPLE,
   'materials-swatch':  MODE.SIMPLE,
   'plan-import':       MODE.SIMPLE,   // D1: import a raster floor plan as a trace-over underlay
+  'room-detect':       MODE.SIMPLE,   // A4: find/add rooms auto-detected from wall loops (un-tiered read+add)
   // revealed in Pro
   'exact-dimensions':  MODE.PRO,
   'plan-calibrate':    MODE.PRO,      // D1: calibrate the underlay's scale by drawing a known dimension
