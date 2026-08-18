@@ -1,7 +1,8 @@
 import { createViewer } from './viewer/viewer.js';
 import { createWalkController } from './viewer/walkCamera.js';
 import { buildScene, sceneBounds, rebuildGeometry } from './build/sceneBuilder.js';
-import { serialize, deserialize, validateProject, projectCounts, createLevel, createRoof, findLevel, roomAtPoint, polygonCentroid } from './core/model.js';
+import { serialize, deserialize, validateProject, projectCounts, createLevel, createRoof, findLevel, roomAtPoint, polygonCentroid, createRoom } from './core/model.js';
+import { detectNewRooms } from './core/roomDetect.js';
 import { roofOverhangs } from './core/roofShape.js';
 import { createAppState, availableTools, isAvailable, MODE, TOOL, VIEW, CAMERA } from './app/state.js';
 import { cutawayHiddenWalls } from './viewer/cutaway.js';
@@ -15,7 +16,7 @@ import { createPlanCanvas } from './app/planCanvas.js';
 import { createUnderlay, calibrateUnderlay, withOpacity } from './core/underlay.js';
 import { parseLength } from './core/units.js';
 import { STARTERS } from './templates/starters.js';
-import { loadTemplate, setView, addLevel, removeLevel, renameLevel, setLevelHeight, setLevelRoof, setRoofType, composite } from './edit/commands.js';
+import { loadTemplate, setView, addLevel, removeLevel, renameLevel, setLevelHeight, setLevelRoof, setRoofType, composite, addRoom } from './edit/commands.js';
 import { createDirtyTracker } from './app/dirty.js';
 import { planThumbnailSVG } from './app/thumbnail.js';
 import { exportObj, exportProjectJson, exportBaseName } from './core/exportObj.js';
@@ -69,6 +70,7 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       project, controller, planView, state: app, levelId: app.activeLevelId,
       onSelect: () => renderInspector(),
       onRoomActivate: (world) => beginPlanRoomRename(world),
+      onDetectAdd: (candidate) => addDetectedRoom(candidate),
     });
 
     // A model edit re-derives the 3D geometry and redraws the plan + status. The model
@@ -320,6 +322,46 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       openRoomLabelEditor(room);
       return room;
     }
+
+    // --- A4: find + add auto-detected rooms on the plan (un-tiered read + add) ------------------
+    // The pure detector (core/roomDetect.detectNewRooms) turns closed wall loops into candidate
+    // polygons that aren't already covered by a saved room. This wiring surfaces them on the plan
+    // as click-to-add outlines; a click commits an undoable addRoom command (createRoom builds a
+    // plain model room from the polygon — no new save field). Detection stores nothing, and the
+    // candidate outlines are pure view state that never reach the save.
+    const currentLevel = () => findLevel(project, app.activeLevelId) || project.levels[0];
+
+    // Toggle the detected-room overlay: off → run detection and offer the candidates; on → clear.
+    function runDetect() {
+      if (plan.getCandidates().length) { plan.clearCandidates(); hint('Detected-room overlay cleared.'); return 0; }
+      const lvl = currentLevel();
+      const found = lvl ? detectNewRooms(lvl) : [];
+      plan.setCandidates(found);
+      if (!found.length) hint('No new rooms found — draw walls that fully enclose a space, then find rooms again.');
+      else hint(`${found.length} room${found.length === 1 ? '' : 's'} found — click a highlighted area to add it.`);
+      return found.length;
+    }
+
+    // Commit one detected candidate as a real "Room" (undoable). Rolls the insert back if it would
+    // somehow invalidate the model, then re-detects so the just-added room drops out of the offer.
+    function addDetectedRoom(candidate) {
+      if (!candidate || !Array.isArray(candidate.points) || candidate.points.length < 3) return null;
+      const lvl = currentLevel();
+      if (!lvl) return null;
+      const room = createRoom(candidate.points, { name: 'Room' });
+      const cmd = history.execute(addRoom(lvl.id, room));
+      if (!validateProject(project).ok) { cmd.undo(project); history.undoStack.pop(); refresh(); return null; }
+      app.selection = { kind: 'room', id: room.id };
+      refresh();                                  // rebuild 3D floor + redraw plan + inspector (clears candidates)
+      const remaining = detectNewRooms(lvl);      // the added room is now "covered" — offer only the rest
+      plan.setCandidates(remaining);
+      hint(remaining.length
+        ? `Room added — ${remaining.length} more found. ${isAvailable('room-rename', app.mode) ? 'Double-click to rename.' : 'Switch to Pro to rename.'}`
+        : `Room added. ${isAvailable('room-rename', app.mode) ? 'Double-click the label to rename.' : 'Switch to Pro to rename it.'}`);
+      return room;
+    }
+    const detectBtn = $('detect-btn');
+    if (detectBtn) detectBtn.addEventListener('click', () => runDetect());
 
     function commitField(key, raw) {
       if (committingField) return;   // re-render on commit blurs the input; don't loop
@@ -1037,6 +1079,21 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       __roomEditor: () => (roomEditor ? { value: roomEditor.value } : null),
       __roomEditorCommit: (v) => { if (!roomEditor) return null; roomEditor.value = v; roomEditor.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })); return { name: (project.levels.flatMap((l) => l.rooms || []).find((r) => app.selection && r.id === app.selection.id) || {}).name || null, editing: !!roomEditor }; },
       __roomEditorCancel: () => { if (!roomEditor) return false; roomEditor.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); return !roomEditor; },
+      // A4: find/add auto-detected rooms. __findRooms toggles the overlay (returns the candidate
+      // count + polygons); __addDetectedRoom(i) commits candidate i as a real room through the SAME
+      // onDetectAdd path a plan click uses, then reports the new room count, the remaining offers,
+      // and the undo depth so the harness can prove it's an undoable model edit, not view state.
+      __findRooms: () => { const n = runDetect(); return { count: plan.getCandidates().length, candidates: plan.getCandidates(), seamVisible: !!(detectBtn && detectBtn.offsetParent !== null), toggled: n }; },
+      __detectCandidates: () => plan.getCandidates(),
+      __detectSeamVisible: () => !!(detectBtn && detectBtn.offsetParent !== null),
+      __addDetectedRoom: (i) => {
+        const cands = plan.getCandidates();
+        const cand = cands[i];
+        if (!cand) return null;
+        const before = project.levels.flatMap((l) => l.rooms || []).length;
+        const room = addDetectedRoom(cand);
+        return { added: room ? room.id : null, rooms: project.levels.flatMap((l) => l.rooms || []).length, added_count: project.levels.flatMap((l) => l.rooms || []).length - before, remaining: plan.getCandidates().length, undo: history.undoStack.length, selection: app.selection };
+      },
       // multi-level (storey) seam handles — deterministic driving from the headless harness
       __levels: () => project.levels.map((l) => ({ id: l.id, name: l.name, elevation: l.elevation, height: l.height, walls: l.walls.length, hasRoof: !!l.roof })),
       __activeLevel: () => app.activeLevelId,

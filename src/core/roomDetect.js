@@ -23,7 +23,7 @@
 // The detector is derived-on-read: it returns plain {points:[{x,z}...]} polygons. A caller wires
 // them to createRoom(...) if/when it wants named, saved rooms — detection itself stores nothing.
 
-import { polygonArea } from './model.js';
+import { polygonArea, polygonCentroid, pointInPolygon } from './model.js';
 
 export const DEFAULT_TOL = 1e-3;       // 1 mm: merge endpoints closer than this into one node
 export const DEFAULT_MIN_AREA = 1e-4;  // drop faces below 0.0001 m² (spurs / float slivers)
@@ -192,9 +192,19 @@ export function detectNewRooms(level, opts = {}) {
   const candidates = detectRooms(level.walls, opts);
   const existing = Array.isArray(level.rooms) ? level.rooms : [];
   const areaTol = opts.areaTol ?? 0.05;              // 5 cm² — existing vs derived area slack
+  // "Covered" = an existing room matches the candidate by area AND sits IN THE SAME PLACE (its
+  // centroid falls inside the candidate). The position test matters: two rooms of equal area at
+  // different spots (a duplex's mirrored halves, say) must not both vanish when only one is saved
+  // — an area-only test would hide the still-undrawn twin. Belt-and-braces, we also treat the
+  // candidate's own centroid landing inside the existing room as a match, so a near-identical
+  // polygon is covered from either side.
   const covered = (poly) => {
     const a = polygonArea(poly.points);
-    return existing.some((r) => Math.abs(polygonArea(r.points) - a) <= Math.max(areaTol, a * 0.01));
+    const pc = polygonCentroid(poly.points);
+    return existing.some((r) => {
+      if (Math.abs(polygonArea(r.points) - a) > Math.max(areaTol, a * 0.01)) return false;
+      return pointInPolygon(polygonCentroid(r.points), poly.points) || pointInPolygon(pc, r.points);
+    });
   };
   return candidates.filter((poly) => !covered(poly));
 }
