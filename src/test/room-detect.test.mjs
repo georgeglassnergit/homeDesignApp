@@ -117,6 +117,20 @@ function signedArea(points) {
   ok(detectNewRooms(levelNoRoom).length === 1, 'no existing room → 1 new room offered');
   const levelWithRoom = createLevel({ walls, rooms: [createRoom(square, { name: 'Kitchen' })] });
   ok(detectNewRooms(levelWithRoom).length === 0, 'room already saved → 0 new rooms offered');
+
+  // Equal-area but DIFFERENT-PLACE rooms: two 4×4 rooms side by side (a shared divider at x=4).
+  // Saving one must NOT hide the other — the covered() test is position-aware (area + centroid-in),
+  // not area-only. (An area-only filter wrongly vanished the undrawn twin.)
+  const twinWalls = [
+    seg(0, 0, 8, 0), seg(8, 0, 8, 4), seg(8, 4, 0, 4), seg(0, 4, 0, 0), seg(4, 0, 4, 4),
+  ];
+  const twoRooms = detectNewRooms(createLevel({ walls: twinWalls }));
+  ok(twoRooms.length === 2, 'two equal-area rooms across a divider → both offered');
+  const leftSquare = [{ x: 0, z: 0 }, { x: 4, z: 0 }, { x: 4, z: 4 }, { x: 0, z: 4 }];
+  const oneSaved = createLevel({ walls: twinWalls, rooms: [createRoom(leftSquare, { name: 'Left' })] });
+  const stillNew = detectNewRooms(oneSaved);
+  ok(stillNew.length === 1, 'saving the left 4×4 leaves the equal-area right 4×4 still offered (position-aware)');
+  ok(polygonArea(stillNew[0].points) > 15.9 && polygonArea(stillNew[0].points) < 16.1, 'the remaining offer is the other 16 m² room');
 }
 
 // ── 9. Malformed input never throws; returns [] ───────────────────────────────

@@ -2,7 +2,7 @@
 // Draws the model with the Canvas 2D API and forwards pointer gestures to the
 // ToolController. Uses NO Three.js and stores NO geometry: it reads the plain
 // model + planView mapping, and every edit goes through the controller's commands.
-import { wallLength, polygonArea, polygonCentroid, roomAtPoint } from '../core/model.js';
+import { wallLength, polygonArea, polygonCentroid, roomAtPoint, pointInPolygon } from '../core/model.js';
 import { measureDistance } from '../edit/measure.js';
 import { formatLength, formatArea } from '../core/units.js';
 import { underlayWorldRect } from '../core/underlay.js';
@@ -19,11 +19,34 @@ export function hoverRoomId(level, point, tool) {
   return room ? room.id : null;
 }
 
-export function createPlanCanvas(canvas, { project, controller, planView, state, levelId, onSelect, onRoomActivate }) {
+// A4 — which detected-room candidate (if any) sits under a plan point. Candidates are the
+// derived-on-read polygons from detectNewRooms (pure view state — never saved); clicking one
+// adds it as a real room. Pure resolution (no DOM, no mutation): returns the index of the
+// smallest-area candidate containing the point (so a nested candidate wins over the room that
+// encloses it, mirroring roomAtPoint's tie-break), or -1 when the point is over none. Exported
+// so the hit-test is unit-testable without a canvas.
+export function candidateAtPoint(candidates, point) {
+  if (!Array.isArray(candidates)) return -1;
+  let best = -1, bestArea = Infinity;
+  for (let i = 0; i < candidates.length; i++) {
+    const pts = candidates[i] && candidates[i].points;
+    if (!Array.isArray(pts) || pts.length < 3) continue;
+    if (!pointInPolygon(point, pts)) continue;
+    const a = polygonArea(pts);
+    if (a < bestArea) { bestArea = a; best = i; }
+  }
+  return best;
+}
+
+export function createPlanCanvas(canvas, { project, controller, planView, state, levelId, onSelect, onRoomActivate, onDetectAdd }) {
   const ctx = canvas.getContext('2d');
   const notifySelect = () => { if (onSelect) onSelect(); };
   let activeLevelId = levelId;                    // retargetable so the plan follows the active storey
   let hoveredId = null;                           // A2: room under the plan cursor (view state — never saved)
+  // A4 — detected-room candidates currently offered on the plan: derived-on-read polygons the
+  // user can click to add as real rooms. Pure DISPLAY state — never serialized. Cleared whenever
+  // the model changes shape under them (level switch, template load) so no stale outline lingers.
+  let candidates = [];
   // D1 — the imported floor-plan underlay: a descriptor (core/underlay.js) + the loaded image.
   // Pure DISPLAY state — it is drawn beneath the walls to trace over and NEVER reaches the save.
   let underlay = null;         // frozen underlay descriptor or null
@@ -34,7 +57,7 @@ export function createPlanCanvas(canvas, { project, controller, planView, state,
   const level = () => project.levels.find((l) => l.id === activeLevelId) || project.levels[0];
   // Point the plan surface at a different storey (multi-level editing). The plan only ever
   // draws one level at a time — the storey the user is editing.
-  const setLevel = (id) => { activeLevelId = id; };
+  const setLevel = (id) => { activeLevelId = id; candidates = []; };
 
   function resize() {
     const dpr = Math.min(devicePixelRatio || 1, 2);
@@ -70,9 +93,48 @@ export function createPlanCanvas(canvas, { project, controller, planView, state,
     drawGrid(w, h);
     const lv = level();
     if (lv) { drawRooms(lv); drawWalls(lv); drawOpenings(lv); drawVertices(lv); }
+    drawCandidates();               // A4: detected-room outlines float above the walls, click to add
     drawPreview();
     drawMeasure();
     drawCalibrate();
+  }
+
+  // A4 — paint the auto-detected room candidates as dashed teal outlines with an "+ Add room"
+  // chip at each centroid, so the user sees exactly what a click will create. Pure view: reads
+  // the derived candidate polygons (never the save) and draws them ABOVE the walls. No candidate
+  // is ever a command until the user clicks it (see the pointerdown handler).
+  function drawCandidates() {
+    if (!candidates.length) return;
+    ctx.save();
+    for (const cand of candidates) {
+      const pts = cand && cand.points;
+      if (!Array.isArray(pts) || pts.length < 3) continue;
+      ctx.beginPath();
+      pts.forEach((pt, i) => {
+        const s = planView.worldToScreen(pt);
+        i === 0 ? ctx.moveTo(s.px, s.py) : ctx.lineTo(s.px, s.py);
+      });
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(46,125,107,.12)';               // soft teal wash — distinct from room amber
+      ctx.fill();
+      ctx.setLineDash([7, 4]); ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(46,125,107,.85)';
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // "+ Add room" chip at the centroid
+      const c = planView.worldToScreen(polygonCentroid(pts));
+      const label = '+ Add room';
+      ctx.font = '600 11px system-ui, sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      const tw = ctx.measureText(label).width, pad = 6;
+      const bx = c.px - tw / 2 - pad, by = c.py - 9, bw = tw + pad * 2, bh = 18, r = 5;
+      ctx.beginPath();
+      ctx.moveTo(bx + r, by); ctx.arcTo(bx + bw, by, bx + bw, by + bh, r);
+      ctx.arcTo(bx + bw, by + bh, bx, by + bh, r); ctx.arcTo(bx, by + bh, bx, by, r);
+      ctx.arcTo(bx, by, bx + bw, by, r); ctx.closePath();
+      ctx.fillStyle = 'rgba(46,125,107,.92)'; ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.fillText(label, c.px, c.py);
+    }
+    ctx.restore();
   }
 
   // D1 — paint the imported floor plan as an axis-aligned underlay. The descriptor gives the
@@ -290,9 +352,17 @@ export function createPlanCanvas(canvas, { project, controller, planView, state,
     return planView.screenToWorld(e.clientX - r.left, e.clientY - r.top);
   };
   canvas.addEventListener('pointerdown', (e) => {
+    const w = worldAt(e);
     // While calibrating, plan clicks mark the known dimension instead of editing the model.
-    if (calibrate) { canvas.setPointerCapture(e.pointerId); calibratePoint(worldAt(e)); draw(); return; }
-    canvas.setPointerCapture(e.pointerId); controller.pointerDown(worldAt(e)); draw(); notifySelect();
+    if (calibrate) { canvas.setPointerCapture(e.pointerId); calibratePoint(w); draw(); return; }
+    // A4: with detected-room candidates showing under the SELECT tool, clicking one adds it as a
+    // real room (via onDetectAdd) and takes priority over selection — so the click that says
+    // "yes, this is a room" never also starts a drag or reselects a wall underneath it.
+    if (candidates.length && state.activeTool === TOOL.SELECT && onDetectAdd) {
+      const idx = candidateAtPoint(candidates, w);
+      if (idx >= 0) { canvas.setPointerCapture(e.pointerId); onDetectAdd(candidates[idx], idx); return; }
+    }
+    canvas.setPointerCapture(e.pointerId); controller.pointerDown(w); draw(); notifySelect();
   });
   canvas.addEventListener('pointermove', (e) => {
     const w = worldAt(e);
@@ -323,5 +393,10 @@ export function createPlanCanvas(canvas, { project, controller, planView, state,
     getUnderlay: () => underlay,
     hasUnderlay: () => !!(underlay && underlayImg),
     startCalibrate, cancelCalibrate, isCalibrating, calibratePoint,
+    // A4 detected-room hooks: offer/read/clear the click-to-add candidate outlines (view state only).
+    setCandidates: (polys) => { candidates = Array.isArray(polys) ? polys : []; draw(); return candidates.length; },
+    getCandidates: () => candidates,
+    clearCandidates: () => { const had = candidates.length; candidates = []; if (had) draw(); return had; },
+    candidateAt: (world) => candidateAtPoint(candidates, world),
   };
 }
