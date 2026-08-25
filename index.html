@@ -121,6 +121,44 @@
       #picker-close:hover { background: #fbf7f0; }
       #picker-note { color: #7a6c5d; font-size: 12px; }
 
+      /* D2 · Outsource intake modal — mirrors the #picker overlay. A local, no-backend flow:
+         derive a shareable brief from the live design and let the user copy/download it. */
+      #outsource {
+        position: fixed; inset: 0; z-index: 41; display: none;
+        align-items: center; justify-content: center;
+        background: rgba(43, 38, 34, .55); backdrop-filter: blur(3px);
+      }
+      #outsource.open { display: flex; }
+      #outsource-card {
+        background: #f4efe7; border: 1px solid #cbb2a0; border-radius: 14px;
+        box-shadow: 0 18px 50px rgba(43,38,34,.35);
+        padding: 22px 24px; width: min(760px, 94vw); max-height: 90vh; overflow: auto;
+      }
+      #outsource h2 { font-family: Georgia, serif; margin: 0 0 2px; font-size: 21px; }
+      #outsource .sub { color: #7a6c5d; font-size: 13px; margin: 0 0 14px; }
+      .os-lab { display: block; font-size: 11.5px; font-weight: 600; color: #6b5b4b; margin: 8px 0 3px; }
+      #outsource .os-two { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+      @media (max-width: 620px) { #outsource .os-two { grid-template-columns: 1fr; } }
+      #outsource input, #outsource textarea, #outsource select {
+        width: 100%; font: inherit; font-size: 13px; color: #2b2622; box-sizing: border-box;
+        background: #fff; border: 1px solid #c3ab97; border-radius: 8px; padding: 7px 9px;
+      }
+      #outsource textarea { resize: vertical; }
+      #outsource #os-brief { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11.5px; line-height: 1.4; background: #fbf7f0; }
+      #outsource input:focus, #outsource textarea:focus, #outsource select:focus { outline: 2px solid #6b5b4b; outline-offset: 1px; border-color: #6b5b4b; }
+      .os-disc { color: #7a6c5d; font-size: 11px; line-height: 1.4; margin: 12px 0 0; font-style: italic; }
+      #outsource-foot { margin-top: 14px; display: flex; flex-wrap: wrap; align-items: center; gap: 9px; }
+      .os-act, #outsource-close {
+        font: inherit; font-size: 13px; padding: 6px 13px; border: 1px solid #c3ab97; border-radius: 8px;
+        background: #fff; cursor: pointer;
+      }
+      .os-act:hover, #outsource-close:hover { background: #fbf7f0; }
+      .os-primary { background: #6b5b4b; color: #fff; border-color: #6b5b4b; }
+      .os-primary:hover { background: #5a4c3e; }
+      #os-note { color: #7a6c5d; font-size: 12px; }
+      #os-note.err { color: #a0392f; }
+      #os-note.ok { color: #3a6b45; }
+
       /* Pro-seam snapping / constraint settings — a popover under the "Snap…" toolbar
          button. Hidden entirely in Simple mode (the seam); revealed in Pro so a precision
          user controls grid / vertex / angle constraints. Storage-free view pref. */
@@ -473,6 +511,36 @@
         <div id="picker-foot">
           <button id="picker-close">Keep current</button>
           <span id="picker-note"></span>
+        </div>
+      </div>
+    </div>
+    <div id="outsource" aria-modal="true" role="dialog" aria-label="Outsource your drawings">
+      <div id="outsource-card">
+        <h2>Outsource — have your home drawn for you</h2>
+        <p class="sub">Generate a brief from your current design and send it to a drafting service of your choice. Everything stays on your device — nothing is uploaded.</p>
+        <label class="os-lab" for="os-service">What you need</label>
+        <select id="os-service"></select>
+        <div class="os-two">
+          <div class="os-col">
+            <label class="os-lab" for="os-name">Your name</label>
+            <input id="os-name" type="text" autocomplete="name" placeholder="Ada Lovelace">
+            <label class="os-lab" for="os-email">Email</label>
+            <input id="os-email" type="email" autocomplete="email" placeholder="you@example.com">
+            <label class="os-lab" for="os-notes">Notes for the drafter (optional)</label>
+            <textarea id="os-notes" rows="3" placeholder="Anything specific you want them to know…"></textarea>
+          </div>
+          <div class="os-col">
+            <label class="os-lab" for="os-brief">Brief preview (auto-generated)</label>
+            <textarea id="os-brief" rows="12" readonly></textarea>
+          </div>
+        </div>
+        <p id="os-disc" class="os-disc"></p>
+        <div id="outsource-foot">
+          <button id="os-copy" class="os-act">Copy brief</button>
+          <button id="os-dl-brief" class="os-act">Download brief (.txt)</button>
+          <button id="os-dl-req" class="os-act os-primary">Download request (.json)</button>
+          <button id="outsource-close">Close</button>
+          <span id="os-note"></span>
         </div>
       </div>
     </div>

@@ -22,6 +22,7 @@ import { planThumbnailSVG } from './app/thumbnail.js';
 import { exportObj, exportProjectJson, exportBaseName } from './core/exportObj.js';
 import { exportGltf, gltfBaseName } from './core/exportGltf.js';
 import { runAdvisoryChecks, advisorySummary, ADVISORY_DISCLAIMER } from './core/advisoryChecks.js';
+import { buildProjectBrief, formatBriefText, createOutsourceRequest, validateOutsourceRequest, outsourceRequestJson, SERVICE_LEVELS, OUTSOURCE_DISCLAIMER } from './core/outsourceRequest.js';
 
 const spike = { booted: false, built: false, sceneMeshes: 0, roundTripOk: false, counts: null, error: null };
 window.__app = spike;
@@ -709,6 +710,50 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       if (!on) toggleExportPanel(false);
     }
 
+    // --- D2: outsource intake (un-tiered seam: 'outsource') ------------------------------------
+    // The "Outsource" onboarding tile opens a LOCAL, no-backend modal: it derives a shareable
+    // brief from the live design (pure core/outsourceRequest.js) and lets the user copy/download
+    // it to hand a drafting service of their choice. Nothing is uploaded; no API key (constraint
+    // #7). Every action is derived-on-read — it reads the model and never touches the save.
+    const osEl = $('outsource'), osServiceSel = $('os-service'), osBriefBox = $('os-brief');
+    const osName = $('os-name'), osEmail = $('os-email'), osNotes = $('os-notes'), osNote = $('os-note');
+    // Populate the service dropdown once from the pure catalog.
+    for (const s of SERVICE_LEVELS) {
+      const opt = document.createElement('option');
+      opt.value = s.id; opt.textContent = `${s.label} — ${s.desc}`;
+      osServiceSel.appendChild(opt);
+    }
+    $('os-disc').textContent = OUTSOURCE_DISCLAIMER;
+    function osSetNote(msg, cls) { osNote.textContent = msg || ''; osNote.className = cls || ''; }
+    function osBriefText() { return formatBriefText(buildProjectBrief(project, { units: app.units })); }
+    function refreshOutsourceBrief() { osBriefBox.value = osBriefText(); }
+    function osCurrentRequest() {
+      return createOutsourceRequest(project,
+        { name: osName.value, email: osEmail.value, notes: osNotes.value },
+        { service: osServiceSel.value, units: app.units, createdAt: new Date().toISOString() });
+    }
+    function openOutsource() { refreshOutsourceBrief(); osSetNote(''); osEl.classList.add('open'); }
+    function closeOutsource() { osEl.classList.remove('open'); }
+    osServiceSel.addEventListener('change', () => osSetNote(''));
+    $('os-copy').addEventListener('click', async () => {
+      const text = osBriefText();
+      try { await navigator.clipboard.writeText(text); osSetNote('Brief copied to clipboard.', 'ok'); }
+      catch { osBriefBox.focus(); osBriefBox.select(); osSetNote('Press Ctrl/Cmd+C to copy the selected brief.', ''); }
+    });
+    $('os-dl-brief').addEventListener('click', () => {
+      downloadText(`${exportBaseName(project)}-brief.txt`, osBriefText(), 'text/plain');
+      osSetNote('Brief downloaded.', 'ok');
+    });
+    $('os-dl-req').addEventListener('click', () => {
+      const req = osCurrentRequest();
+      const v = validateOutsourceRequest(req);
+      if (!v.ok) { osSetNote(v.errors[0], 'err'); return; }
+      downloadText(`${exportBaseName(project)}-outsource-request.json`, outsourceRequestJson(req), 'application/json');
+      osSetNote('Request downloaded — attach it to an email to your drafter.', 'ok');
+    });
+    $('outsource-close').addEventListener('click', closeOutsource);
+    osEl.addEventListener('click', (e) => { if (e.target === osEl) closeOutsource(); });
+
     // --- E2: advisory checks (Pro seam: 'code-checks') ----------------------------------------
     // A read-only "Checks" panel that runs the pure advisory engine (core/advisoryChecks.js) over
     // the live project and lists the approximate residential rules-of-thumb it doesn't meet. EVERY
@@ -1040,8 +1085,9 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       grid.appendChild(card);
     }
     // Onboarding tiles — RoomSketcher's blank / template / import / outsource pattern.
-    // D1: "Import a plan" is now LIVE (loads a floor-plan underlay to trace over); "Outsource"
-    // stays a Phase 3+ coming-soon tile so the roadmap still reads.
+    // D1: "Import a plan" is LIVE (loads a floor-plan underlay to trace over). D2: "Outsource"
+    // is now LIVE too — a local, no-backend intake that turns the current design into a brief
+    // to hand a drafting service. Both tiles are wired; nothing is "coming soon" here anymore.
     {
       const imp = document.createElement('button');
       imp.className = 'tpl-card'; imp.id = 'tpl-import'; imp.title = 'Import a floor plan image and trace over it';
@@ -1050,14 +1096,13 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       imp.addEventListener('click', () => { closePicker(); openUnderlayPicker(); });
       grid.appendChild(imp);
     }
-    for (const soon of [
-      { label: 'Outsource', desc: 'Have your home drawn for you.' },
-    ]) {
-      const card = document.createElement('button');
-      card.className = 'tpl-card'; card.disabled = true;
-      card.innerHTML = `<div class="thumb">${planThumbnailSVG({ levels: [] })}</div>`
-        + `<div class="name">${soon.label}</div><div class="desc">${soon.desc}</div><div class="soon">Coming soon</div>`;
-      grid.appendChild(card);
+    {
+      const out = document.createElement('button');
+      out.className = 'tpl-card'; out.id = 'tpl-outsource'; out.title = 'Generate a brief to hand your design to a drafting service';
+      out.innerHTML = `<div class="thumb">${planThumbnailSVG({ levels: [] })}</div>`
+        + `<div class="name">Outsource</div><div class="desc">Have your home drawn for you.</div>`;
+      out.addEventListener('click', () => { closePicker(); openOutsource(); });
+      grid.appendChild(out);
     }
 
     $('new').addEventListener('click', () => openPicker(false));
@@ -1074,6 +1119,7 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
 
     // --- keyboard: Esc closes the picker / ends a wall run, Del removes, Ctrl+Z/Y undo/redo ---
     addEventListener('keydown', (e) => {
+      if (osEl.classList.contains('open')) { if (e.key === 'Escape') closeOutsource(); return; }
       if (pickerEl.classList.contains('open')) { if (e.key === 'Escape') closePicker(); return; }
       if (e.key === 'Escape') { if (plan.isCalibrating()) { cancelCalibrate(); hint('Calibration cancelled.'); } else if (app.camera === CAMERA.WALK) setCamera(CAMERA.ORBIT); else { controller.finishChain(); plan.draw(); } }
       else if (e.key === 'Delete' || e.key === 'Backspace') { controller.deleteSelection(); }
@@ -1213,6 +1259,28 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
         if (!el) return null;
         el.click();
         return { selection: app.selection, activeLevel: app.activeLevelId, undo: history.undoStack.length };
+      },
+      // D2: outsource intake handles. __outsourceSeamVisible reports the tile is wired (un-tiered);
+      // __openOutsource opens the modal and reports its rendered state; __outsourceBrief returns the
+      // pure derived brief; __outsourceRequest builds + validates a request from given contact input.
+      __outsourceSeamVisible: () => isAvailable('outsource', app.mode),
+      __openOutsource: () => {
+        const before = window.__project ? serialize(project) : null;
+        openOutsource();
+        return {
+          open: osEl.classList.contains('open'),
+          briefLen: osBriefBox.value.length,
+          services: osServiceSel.querySelectorAll('option').length,
+          disclaimer: $('os-disc').textContent,
+          saveUntouched: before === serialize(project),
+        };
+      },
+      __closeOutsource: () => { closeOutsource(); return !osEl.classList.contains('open'); },
+      __outsourceBrief: () => buildProjectBrief(project, { units: app.units }),
+      __outsourceRequest: (contact = {}, service = 'concept') => {
+        const before = serialize(project);
+        const req = createOutsourceRequest(project, contact, { service, units: app.units, createdAt: '2026-08-25' });
+        return { req, valid: validateOutsourceRequest(req), saveUntouched: before === serialize(project), undo: history.undoStack.length };
       },
       // D1: import-a-plan underlay handles — deterministic driving from the headless harness.
       // A file dialog can't open headlessly, so __importUnderlay loads a data: URL directly (the
