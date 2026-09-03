@@ -108,6 +108,27 @@ export function removeOpening(levelId, openingId) {
   };
 }
 
+// Add a room to a level (the A4 auto-detection "add this detected room" edit). `room` must
+// already be a model room (from createRoom, with id + name + points + material) — the caller
+// builds it from a detected polygon, so this command only inserts/removes it. It touches only
+// the room's existing fields (createRoom already writes them and serialize round-trips them),
+// so it adds NO new save field and can never break the Phase 1 lossless contract. Undo removes
+// exactly the inserted room (matched by id), restoring the prior save byte-for-byte.
+export function addRoom(levelId, room) {
+  return {
+    name: 'Add room',
+    do(project) {
+      const lvl = findLevel(project, levelId);
+      if (!lvl) throw new Error(`addRoom: missing level ${levelId}`);
+      lvl.rooms.push(room);
+    },
+    undo(project) {
+      const lvl = findLevel(project, levelId);
+      if (lvl) lvl.rooms = lvl.rooms.filter(r => r.id !== room.id);
+    },
+  };
+}
+
 // Resize a wall by exact dimensions (the Pro-seam "exact-dimensions" edit). `changes` may
 // carry any of { length, thickness, height } in METERS. `length` moves endpoint b along the
 // existing a→b direction, keeping a fixed (a degenerate zero-length wall has no direction, so
