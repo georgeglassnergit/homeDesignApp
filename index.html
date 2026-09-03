@@ -255,6 +255,31 @@
       #export-panel .xp-btn small { display: block; color: #8a7c6c; font-size: 10.5px; margin-top: 2px; }
       #export-panel .xp-hint { color: #8a7c6c; font-size: 10.5px; margin-top: 9px; line-height: 1.4; }
 
+      /* E2 — advisory checks (Pro seam: 'code-checks'). Same hidden-in-Simple / revealed-in-Pro
+         popover pattern as export/roof/level. A read-only list of approximate, ADVISORY findings —
+         never a code-compliance claim; the disclaimer at the foot is always shown. */
+      #checks-group { display: none; }           /* shown only in Pro (isAvailable gate) */
+      #checks-group.on { display: flex; }
+      #checks-panel {
+        position: fixed; z-index: 45; display: none;
+        background: #f4efe7; border: 1px solid #cbb2a0; border-radius: 11px;
+        box-shadow: 0 12px 34px rgba(43,38,34,.28); padding: 12px 14px; width: 300px;
+        font-size: 12.5px;
+      }
+      #checks-panel.open { display: block; }
+      #checks-panel .cp-title { font-family: Georgia, serif; font-weight: 700; font-size: 13.5px; margin-bottom: 4px; }
+      #checks-panel .cp-summary { color: #6b5b4b; font-size: 11.5px; margin-bottom: 8px; }
+      #checks-panel .cp-list { max-height: 260px; overflow-y: auto; }
+      #checks-panel .cp-item {
+        font: inherit; width: 100%; margin: 5px 0; padding: 7px 9px; cursor: pointer; text-align: left;
+        border: 1px solid #d8c3ab; border-left: 3px solid #c08a3e; border-radius: 8px;
+        background: #fff; color: #2b2622; line-height: 1.35;
+      }
+      #checks-panel .cp-item:hover { background: #fbf7f0; border-color: #6b5b4b; border-left-color: #a8701f; }
+      #checks-panel .cp-where { display: block; font-weight: 700; font-size: 10.5px; color: #8a7c6c; margin-bottom: 1px; }
+      #checks-panel .cp-msg { display: block; }
+      #checks-panel .cp-disc { color: #8a7c6c; font-size: 10px; margin-top: 10px; line-height: 1.4; border-top: 1px solid #e0d3c1; padding-top: 8px; }
+
       /* D1 — imported floor-plan underlay. The "Plan image…" group is hidden until a plan is
          imported (there's nothing to adjust before then); the popover controls opacity, scale
          calibration (Pro), and removal. Same popover styling as the roof/level panels. */
@@ -335,7 +360,10 @@
           <button id="roof-btn" title="Flat / gable / hip roof and pitch">Roof…</button>
         </div>
         <div class="group" id="export-group" title="Export your design (Pro)">
-          <button id="export-btn" title="Export the model to OBJ (for Blender / SketchUp / CAD) or save as JSON">Export…</button>
+          <button id="export-btn" title="Export the model to OBJ / glTF (for Blender / SketchUp / CAD) or save as JSON">Export…</button>
+        </div>
+        <div class="group" id="checks-group" title="Advisory design checks (Pro)">
+          <button id="checks-btn" title="Run approximate, advisory checks over your design (not a code-compliance check)">Checks…</button>
         </div>
         <div class="group" id="underlay-group" title="Imported floor plan (trace over it)">
           <button id="underlay-btn" title="Adjust the imported floor plan you're tracing over">Plan&nbsp;image…</button>
@@ -418,8 +446,12 @@
     <div id="export-panel" role="dialog" aria-label="Export">
       <div class="xp-title">Export your design</div>
       <button class="xp-btn" id="export-obj">Download OBJ + MTL<small>Building massing (walls + floors) for Blender, SketchUp, CAD</small></button>
+      <button class="xp-btn" id="export-gltf">Download glTF 2.0<small>Self-contained .gltf with PBR materials — model-viewer, Blender, Babylon, Godot</small></button>
       <button class="xp-btn" id="export-json">Download project (JSON)<small>Your lossless save — reload it here to keep editing</small></button>
-      <div class="xp-hint">OBJ is an approximate massing export (openings, roof and furniture are noted, not baked). Not a fabrication or framing spec.</div>
+      <div class="xp-hint">OBJ and glTF are approximate massing exports (openings, roof and furniture are noted, not baked). Not a fabrication or framing spec.</div>
+    </div>
+    <div id="checks-panel" role="dialog" aria-label="Advisory checks">
+      <div id="checks-body"></div>
     </div>
     <div id="underlay-panel" role="dialog" aria-label="Imported floor plan">
       <div class="up-title">Floor-plan underlay</div>

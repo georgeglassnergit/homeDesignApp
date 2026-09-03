@@ -20,6 +20,8 @@ import { loadTemplate, setView, addLevel, removeLevel, renameLevel, setLevelHeig
 import { createDirtyTracker } from './app/dirty.js';
 import { planThumbnailSVG } from './app/thumbnail.js';
 import { exportObj, exportProjectJson, exportBaseName } from './core/exportObj.js';
+import { exportGltf, gltfBaseName } from './core/exportGltf.js';
+import { runAdvisoryChecks, advisorySummary, ADVISORY_DISCLAIMER } from './core/advisoryChecks.js';
 
 const spike = { booted: false, built: false, sceneMeshes: 0, roundTripOk: false, counts: null, error: null };
 window.__app = spike;
@@ -677,6 +679,14 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       downloadText(`${exportBaseName(project)}.json`, exportProjectJson(project), 'application/json');
       toggleExportPanel(false);
     }
+    // E3+: glTF 2.0 — the third named interchange format. Same building massing as the OBJ path
+    // (shared helpers in core/exportGltf.js), but a single self-contained .gltf that carries PBR
+    // materials natively (opens in Blender, model-viewer, Windows 3D Viewer, Babylon, Godot…).
+    function doExportGltf() {
+      const { gltf } = exportGltf(project);
+      downloadText(`${gltfBaseName(project)}.gltf`, gltf, 'model/gltf+json');
+      toggleExportPanel(false);
+    }
     function positionExportPanel() {
       const r = exportBtn.getBoundingClientRect();
       exportPanel.style.left = Math.max(8, Math.min(r.left, innerWidth - 266)) + 'px';
@@ -691,11 +701,85 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
     exportPanel.addEventListener('click', (e) => e.stopPropagation());
     addEventListener('click', () => toggleExportPanel(false));   // click-away closes
     $('export-obj').addEventListener('click', (e) => { e.stopPropagation(); doExportObj(); });
+    $('export-gltf').addEventListener('click', (e) => { e.stopPropagation(); doExportGltf(); });
     $('export-json').addEventListener('click', (e) => { e.stopPropagation(); doExportJson(); });
     function syncExportSeam() {
       const on = isAvailable('ifc-export', app.mode);
       exportGroup.classList.toggle('on', on);
       if (!on) toggleExportPanel(false);
+    }
+
+    // --- E2: advisory checks (Pro seam: 'code-checks') ----------------------------------------
+    // A read-only "Checks" panel that runs the pure advisory engine (core/advisoryChecks.js) over
+    // the live project and lists the approximate residential rules-of-thumb it doesn't meet. EVERY
+    // finding is ADVISORY only — never code-compliant or engineer-certified (constraint #6) — so the
+    // panel always shows ADVISORY_DISCLAIMER. Clicking a finding selects the element it names
+    // (switching storey if needed) so the user can go and adjust it. No command, no model mutation.
+    const checksGroup = $('checks-group'), checksBtn = $('checks-btn'), checksPanel = $('checks-panel');
+    const checksBody = $('checks-body');
+    let checksFindings = [];
+
+    // Resolve a finding's `ref` to a selection + visible storey. Returns the selection (or null for a
+    // whole-storey finding). Pure view state — never a command, never a save touch.
+    function selectFromCheck(ref) {
+      if (!ref) return null;
+      if (ref.levelId && ref.levelId !== app.activeLevelId) switchLevel(ref.levelId);
+      if (ref.kind === 'room') {
+        app.selection = { kind: 'room', id: ref.id };
+      } else if (ref.kind === 'opening') {
+        const lvl = findLevel(project, ref.levelId) || currentLevel();
+        const op = lvl && (lvl.openings || []).find((o) => o.id === ref.id);
+        app.selection = op ? { kind: op.kind, id: op.id } : null;
+      } else {
+        app.selection = null;   // a whole-storey finding — surfacing the storey is enough
+      }
+      plan.draw(); renderInspector(); updateStatus();
+      return app.selection;
+    }
+
+    function renderChecksPanel() {
+      const result = runAdvisoryChecks(project);
+      checksFindings = result.findings;
+      const n = result.counts.advisory;
+      let html = '<div class="cp-title">Advisory checks</div>';
+      html += `<div class="cp-summary">${n === 0 ? 'Nothing flagged — no advisories.' : `${esc(advisorySummary(result))} found.`}</div>`;
+      if (n > 0) {
+        html += '<div class="cp-list">';
+        result.findings.forEach((f, i) => {
+          const where = (f.ref && f.ref.where) || '';
+          html += `<button class="cp-item" data-idx="${i}">`
+            + (where ? `<span class="cp-where">${esc(where)}</span>` : '')
+            + `<span class="cp-msg">${esc(f.message)}</span></button>`;
+        });
+        html += '</div>';
+      }
+      html += `<div class="cp-disc">${esc(result.disclaimer)}</div>`;
+      checksBody.innerHTML = html;
+    }
+    function positionChecksPanel() {
+      const r = checksBtn.getBoundingClientRect();
+      checksPanel.style.left = Math.max(8, Math.min(r.left, innerWidth - 316)) + 'px';
+      checksPanel.style.top = (r.bottom + 6) + 'px';
+    }
+    function toggleChecksPanel(force) {
+      const open = force === undefined ? !checksPanel.classList.contains('open') : force;
+      if (open) { renderChecksPanel(); positionChecksPanel(); }
+      checksPanel.classList.toggle('open', open);
+    }
+    checksBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleChecksPanel(); });
+    checksPanel.addEventListener('click', (e) => e.stopPropagation());
+    addEventListener('click', () => toggleChecksPanel(false));   // click-away closes
+    // One delegated handler for the (re-rendered) finding buttons: select the element it names.
+    checksBody.addEventListener('click', (e) => {
+      const item = e.target.closest('.cp-item');
+      if (!item) return;
+      const f = checksFindings[Number(item.dataset.idx)];
+      if (f) { selectFromCheck(f.ref); hint(`Selected — ${(f.ref && f.ref.where) || 'see the flagged element'}.`); }
+    });
+    function syncChecksSeam() {
+      const on = isAvailable('code-checks', app.mode);
+      checksGroup.classList.toggle('on', on);
+      if (!on) toggleChecksPanel(false);
     }
 
     // --- D1: import a plan (trace an uploaded floor plan) --------------------------------------
@@ -826,7 +910,7 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
     const modeButtons = [...document.querySelectorAll('#modes button')];
     const syncModeButtons = () => modeButtons.forEach((b) => b.classList.toggle('active', b.dataset.mode === app.mode));
     modeButtons.forEach((b) => b.addEventListener('click', () => {
-      app.setMode(b.dataset.mode); syncModeButtons(); syncSnapSeam(); syncLevelSeam(); syncRoofSeam(); syncMeasureSeam(); syncExportSeam(); syncUnderlaySeam(); renderInspector(); updateStatus();
+      app.setMode(b.dataset.mode); syncModeButtons(); syncSnapSeam(); syncLevelSeam(); syncRoofSeam(); syncMeasureSeam(); syncExportSeam(); syncChecksSeam(); syncUnderlaySeam(); renderInspector(); updateStatus();
     }));
 
     // --- display units toggle (m ↔ ft-in) — storage stays metric; this is display only ---
@@ -1011,6 +1095,7 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
     syncRoofSeam();
     syncMeasureSeam();
     syncExportSeam();
+    syncChecksSeam();
     syncUnderlaySeam();
     renderLevels();
     renderInspector();
@@ -1059,7 +1144,7 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
         else if (sel && sel.kind === 'room') { for (const l of project.levels) { const r = l.rooms.find((x) => x.id === sel.id); if (r) stored = r.material; } }
         return { stored, materials: loc ? loc.materials : null, registered: !!(project.materials && project.materials[materialId]), msg: $('ins-msg') ? $('ins-msg').textContent : '' };
       },
-      __setMode: (m) => { app.setMode(m); syncModeButtons(); syncSnapSeam(); syncLevelSeam(); syncRoofSeam(); syncMeasureSeam(); syncExportSeam(); syncUnderlaySeam(); renderInspector(); updateStatus(); },
+      __setMode: (m) => { app.setMode(m); syncModeButtons(); syncSnapSeam(); syncLevelSeam(); syncRoofSeam(); syncMeasureSeam(); syncExportSeam(); syncChecksSeam(); syncUnderlaySeam(); renderInspector(); updateStatus(); },
       __setUnits: (u) => { app.setUnits(u); syncUnitButtons(); renderInspector(); },
       // snapping/constraint seam handles (deterministic driving from the headless harness)
       __snap: () => app.snap, __setSnap: (partial) => { app.setSnap(partial); syncSnapControls(); plan.draw(); return app.snap; },
@@ -1112,6 +1197,23 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       __exportSeamVisible: () => exportGroup.classList.contains('on'),
       __exportObj: () => exportObj(project, { mtlName: `${exportBaseName(project)}.mtl` }),
       __exportJson: () => exportProjectJson(project),
+      // E3+: glTF export (same Pro 'ifc-export' seam). Runs the pure exporter over the live project
+      // and reports the doc + counts so the harness can verify without triggering a download.
+      __exportGltf: () => exportGltf(project),
+      // E2: advisory checks (Pro-seam 'code-checks'). __runChecks runs the pure engine over the live
+      // project and returns the full result; __checksSeamVisible reports the group's Pro gate; the
+      // panel-driven handles open it, read the rendered rows, and click a finding to prove select-to-fix.
+      __checksSeamVisible: () => checksGroup.classList.contains('on'),
+      __runChecks: () => runAdvisoryChecks(project),
+      __openChecks: () => { toggleChecksPanel(true); return { open: checksPanel.classList.contains('open'), rows: checksBody.querySelectorAll('.cp-item').length, disclaimer: !!checksBody.querySelector('.cp-disc') }; },
+      __checkSelect: (i) => {
+        toggleChecksPanel(true);
+        const items = checksBody.querySelectorAll('.cp-item');
+        const el = items[i];
+        if (!el) return null;
+        el.click();
+        return { selection: app.selection, activeLevel: app.activeLevelId, undo: history.undoStack.length };
+      },
       // D1: import-a-plan underlay handles — deterministic driving from the headless harness.
       // A file dialog can't open headlessly, so __importUnderlay loads a data: URL directly (the
       // same code path the file-input change handler runs). Returns the descriptor + world rect.
