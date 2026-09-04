@@ -121,6 +121,51 @@
       #picker-close:hover { background: #fbf7f0; }
       #picker-note { color: #7a6c5d; font-size: 12px; }
 
+      /* D2 — "Outsource" design-brief modal. Same full-panel overlay pattern as the picker; a
+         two-column intake form (fields + live brief preview) with copy/download actions. */
+      #outsource {
+        position: fixed; inset: 0; z-index: 42; display: none;
+        align-items: center; justify-content: center;
+        background: rgba(43, 38, 34, .55); backdrop-filter: blur(3px);
+      }
+      #outsource.open { display: flex; }
+      #out-card {
+        background: #f4efe7; border: 1px solid #cbb2a0; border-radius: 14px;
+        box-shadow: 0 18px 50px rgba(43,38,34,.35);
+        padding: 22px 24px; width: min(860px, 94vw); max-height: 90vh; overflow: auto;
+      }
+      #out-card h2 { font-family: Georgia, serif; margin: 0 0 2px; font-size: 21px; }
+      #out-card .sub { color: #7a6c5d; font-size: 13px; margin: 0 0 16px; line-height: 1.45; }
+      #out-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+      @media (max-width: 680px) { #out-cols { grid-template-columns: 1fr; } }
+      #out-form { display: flex; flex-direction: column; gap: 9px; }
+      #out-form label { font-size: 12px; font-weight: 600; color: #4a4038; display: flex; flex-direction: column; gap: 3px; }
+      #out-form input, #out-form textarea {
+        font: inherit; font-size: 13px; padding: 6px 8px; border: 1px solid #c3ab97;
+        border-radius: 7px; background: #fff; color: #2b2622; width: 100%; box-sizing: border-box;
+      }
+      #out-form textarea { resize: vertical; min-height: 68px; }
+      #out-form input:focus, #out-form textarea:focus { outline: none; border-color: #6b5b4b; }
+      #out-email-warn { display: none; color: #a04024; font-size: 11px; font-weight: 500; }
+      #out-email-warn.show { display: block; }
+      #out-preview-wrap { display: flex; flex-direction: column; gap: 6px; }
+      #out-preview-wrap .pv-title { font-size: 12px; font-weight: 600; color: #4a4038; }
+      #out-preview {
+        margin: 0; background: #fbf8f2; border: 1px solid #cbb2a0; border-radius: 9px;
+        padding: 12px 14px; font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+        font-size: 11px; line-height: 1.5; color: #2b2622; white-space: pre-wrap; word-break: break-word;
+        max-height: 46vh; overflow: auto;
+      }
+      #out-foot { margin-top: 16px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+      #out-foot button {
+        font: inherit; font-size: 13px; padding: 7px 15px; border: 1px solid #c3ab97; border-radius: 8px;
+        background: #fff; cursor: pointer;
+      }
+      #out-foot button:hover { background: #fbf7f0; border-color: #6b5b4b; }
+      #out-foot #out-download { background: #6b5b4b; color: #fff; border-color: #6b5b4b; }
+      #out-foot #out-download:hover { background: #5a4c3e; }
+      #out-status { color: #5a7a4a; font-size: 12px; }
+
       /* Pro-seam snapping / constraint settings — a popover under the "Snap…" toolbar
          button. Hidden entirely in Simple mode (the seam); revealed in Pro so a precision
          user controls grid / vertex / angle constraints. Storage-free view pref. */
@@ -465,6 +510,33 @@
       <div class="up-hint">Trace walls straight over the imported plan. <b>Calibrate</b> (Pro): click two points on a known dimension, then type its real length, and the plan rescales to match. The image is a display aid only — it is not saved with your home.</div>
     </div>
     <input type="file" id="plan-file" accept="image/png,image/jpeg,image/webp,image/gif" style="display:none">
+    <div id="outsource" aria-modal="true" role="dialog" aria-label="Outsource — prepare a design brief">
+      <div id="out-card">
+        <h2>Have your home drawn for you</h2>
+        <p class="sub">Prepare a <b>design brief</b> from your current model to hand to a professional designer or drafter — by email, print, or paste. Your rough layout and measurements travel with it so they can finish, detail, or redraw it to scale. Every field is optional. No account, no upload — the brief stays on your device until you send it.</p>
+        <div id="out-cols">
+          <div id="out-form">
+            <label>Your name<input id="out-name" type="text" autocomplete="name" placeholder="Jane Homeowner"></label>
+            <label>Email<input id="out-email" type="email" autocomplete="email" placeholder="you@example.com"></label>
+            <span id="out-email-warn">That doesn’t look like an email address — it was left out of the brief.</span>
+            <label>Phone<input id="out-phone" type="tel" autocomplete="tel" placeholder="Optional"></label>
+            <label>Preferred style<input id="out-style" type="text" placeholder="e.g. Modern farmhouse"></label>
+            <label>Ideal timeline<input id="out-timeline" type="text" placeholder="e.g. Spring 2027"></label>
+            <label>What you’d like help with<textarea id="out-notes" rows="4" placeholder="e.g. Finish the kitchen layout and redraw everything to scale."></textarea></label>
+          </div>
+          <div id="out-preview-wrap">
+            <div class="pv-title">Brief preview</div>
+            <pre id="out-preview" aria-live="polite"></pre>
+          </div>
+        </div>
+        <div id="out-foot">
+          <button id="out-download">Download brief (.txt)</button>
+          <button id="out-copy">Copy to clipboard</button>
+          <button id="out-close">Close</button>
+          <span id="out-status" role="status"></span>
+        </div>
+      </div>
+    </div>
     <div id="picker" aria-modal="true" role="dialog" aria-label="Choose a template">
       <div id="picker-card">
         <h2>Start a new home</h2>
