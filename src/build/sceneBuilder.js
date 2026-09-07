@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { makeMaterialRegistry } from './materials.js';
 import { buildWallMesh, buildFloorMesh, buildRoofMesh, buildGableInfillMesh, buildGroundMesh } from './geometry.js';
 import { loadFurniture } from './furniture.js';
+import { joinWalls } from '../core/wallJoin.js';
 
 // Generated-geometry kinds (walls/floors/roof/ground). Furniture is loaded async and
 // tracked separately so incremental rebuilds after an edit don't reload every GLB.
@@ -18,9 +19,14 @@ export function buildGeometry(project) {
   if (project.site) meshes.push(buildGroundMesh(project.site, pick(project.site.material)));
 
   for (const level of project.levels) {
+    // C2: mitre adjoining wall corners so the extruded prisms meet gap-free and
+    // non-overlapping. joinWalls is pure (core, no Three.js) and returns a per-wall
+    // quad parallel to level.walls; a wall with no mitre gets its plain rectangle.
+    const joined = joinWalls(level.walls);
+    const quadById = new Map(joined.map((j) => [j.id, j.quad]));
     for (const wall of level.walls) {
       const ops = level.openings.filter((o) => o.wallId === wall.id);
-      meshes.push(buildWallMesh(wall, ops, level.elevation, pick(wall.material)));
+      meshes.push(buildWallMesh(wall, ops, level.elevation, pick(wall.material), quadById.get(wall.id)));
     }
     for (const room of level.rooms) meshes.push(buildFloorMesh(room, level.elevation, pick(room.material)));
     if (level.roof) {
