@@ -439,6 +439,45 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       if (!on) toggleSnapPanel(false);
     }
 
+    // --- C1 · precise polar (length + angle) wall entry (Pro; part of the snap panel) ------
+    // Direct distance/angle entry: with the wall tool active and a start point clicked, the
+    // user types an exact length + heading and the controller commits that segment, chaining
+    // from the last point (edit/tools.js polarEntry). Length is parsed through the active units
+    // (metric or imperial); angle is plan-frame degrees (0°=east, 90°=up), the same convention
+    // the live readout below reports. Purely a drawing affordance — no new save field.
+    const polarLen = $('polar-len'), polarAng = $('polar-ang'), polarAdd = $('polar-add'),
+          polarLenUnit = $('polar-len-unit'), polarLive = $('polar-live');
+    const POLAR_DEFAULT_HINT = polarLive.textContent;
+    function syncPolarUnit() { polarLenUnit.textContent = app.units === UNIT.IMPERIAL ? 'ft' : 'm'; }
+    function commitPolarSegment() {
+      const lenM = parseLength(polarLen.value, app.units);
+      const ang = parseFloat(polarAng.value);
+      if (!Number.isFinite(lenM)) { hint('Enter a length (e.g. 3.5).'); polarLen.focus(); return; }
+      if (!Number.isFinite(ang)) { hint('Enter an angle in degrees (0°=east, 90°=up).'); polarAng.focus(); return; }
+      const added = controller.polarEntry(lenM, ang);
+      plan.draw(); updateStatus();
+      if (added) {
+        hint(`Added ${formatLength(lenM, app.units)} @ ${ang}° — type the next segment or click to continue.`);
+        polarLen.value = ''; polarLen.focus();   // ready for the next segment; keep the angle
+      } else {
+        hint(app.message || 'Pick the wall tool and click a start point first.');
+      }
+    }
+    polarAdd.addEventListener('click', (e) => { e.stopPropagation(); commitPolarSegment(); });
+    [polarLen, polarAng].forEach((el) => el.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); commitPolarSegment(); }
+    }));
+    // Live readout: while a wall chain is being drawn, show the cursor's current length + angle
+    // in the same units/convention as the entry fields, so the typed value matches the plan.
+    function updatePolarLive() {
+      if (!snapPanel.classList.contains('open')) return;
+      const seg = controller.currentSegmentPolar && controller.currentSegmentPolar();
+      polarLive.textContent = seg
+        ? `Now: ${formatLength(seg.length, app.units)} @ ${seg.angleDeg.toFixed(1)}°  (0°=east, 90°=up)`
+        : POLAR_DEFAULT_HINT;
+    }
+    planCanvasEl.addEventListener('pointermove', updatePolarLive);
+
     // --- Pro-seam multi-level (storey) editing (the "multi-level" feature) ---------------
     // The model has always carried Levels[] and the scene builder already stacks every level
     // by elevation; before this, the app hard-pinned levels[0]. Now a Pro user picks which
@@ -986,7 +1025,7 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
     const unitButtons = [...document.querySelectorAll('#units button')];
     const syncUnitButtons = () => unitButtons.forEach((b) => b.classList.toggle('active', b.dataset.units === app.units));
     unitButtons.forEach((b) => b.addEventListener('click', () => {
-      app.setUnits(b.dataset.units); syncUnitButtons(); renderInspector();
+      app.setUnits(b.dataset.units); syncUnitButtons(); syncPolarUnit(); renderInspector();
     }));
 
     // --- toolbar wiring ---
@@ -1158,6 +1197,7 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
     syncCameraButtons();
     syncModeButtons();
     syncUnitButtons();
+    syncPolarUnit();
     syncSnapSeam();
     syncLevelSeam();
     syncRoofSeam();
@@ -1213,7 +1253,12 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
         return { stored, materials: loc ? loc.materials : null, registered: !!(project.materials && project.materials[materialId]), msg: $('ins-msg') ? $('ins-msg').textContent : '' };
       },
       __setMode: (m) => { app.setMode(m); syncModeButtons(); syncSnapSeam(); syncLevelSeam(); syncRoofSeam(); syncMeasureSeam(); syncExportSeam(); syncChecksSeam(); syncUnderlaySeam(); renderInspector(); updateStatus(); },
-      __setUnits: (u) => { app.setUnits(u); syncUnitButtons(); renderInspector(); },
+      __setUnits: (u) => { app.setUnits(u); syncUnitButtons(); syncPolarUnit(); renderInspector(); },
+      // C1 polar-entry handles: commit a segment at an exact length(m)+angle(deg) and read the
+      // live rubber-band's length+angle — drive the same tool path the panel's Add button uses.
+      __polarEntry: (lenM, angleDeg) => { const added = controller.polarEntry(lenM, angleDeg); plan.draw(); updateStatus(); return { added, walls: (controller.level ? controller.level.walls.length : 0), message: app.message || null }; },
+      __currentSegmentPolar: () => controller.currentSegmentPolar(),
+      __polarSeamVisible: () => snapGroup.classList.contains('on') && !!polarAdd,
       // snapping/constraint seam handles (deterministic driving from the headless harness)
       __snap: () => app.snap, __setSnap: (partial) => { app.setSnap(partial); syncSnapControls(); plan.draw(); return app.snap; },
       __snapSeamVisible: () => snapGroup.classList.contains('on'),

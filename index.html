@@ -194,6 +194,12 @@
       #snap-panel input:disabled, #snap-panel select:disabled { opacity: .4; cursor: default; }
       #snap-panel .sp-unit { color: #8a7c6c; }
       #snap-panel .sp-hint { color: #8a7c6c; font-size: 10.5px; margin-top: 9px; line-height: 1.4; }
+      #snap-panel .sp-sep { border-top: 1px solid #e5ddd2; margin: 11px 0 4px; }
+      #snap-panel #polar-add {
+        font: inherit; font-size: 12.5px; padding: 3px 12px; border: 1px solid #6b5b4b;
+        background: #6b5b4b; color: #fff; border-radius: 5px; cursor: pointer;
+      }
+      #snap-panel #polar-add:hover { background: #5a4c3e; }
 
       /* Pro-seam multi-level (storey) editing — a popover under the "Levels…" toolbar
          button. Hidden in Simple (the seam); revealed in Pro. Lists storeys top-to-bottom;
@@ -449,6 +455,16 @@
         </select>
       </div>
       <div class="sp-hint">Corner snap keeps rooms watertight. Angle lock constrains a drawn wall to the chosen increment.</div>
+      <div class="sp-sep"></div>
+      <div class="sp-title" style="margin-top:2px">Precise segment</div>
+      <div class="sp-row">
+        <input class="sp-num" id="polar-len" type="number" min="0.05" step="0.1" placeholder="length" aria-label="Segment length">
+        <span class="sp-unit" id="polar-len-unit">m</span>
+        <input class="sp-num" id="polar-ang" type="number" step="1" placeholder="angle" aria-label="Segment angle in degrees">
+        <span class="sp-unit">°</span>
+        <button id="polar-add" title="Add a wall segment at this exact length and angle">Add</button>
+      </div>
+      <div class="sp-hint" id="polar-live">Draw tool: click a start point, type a length &amp; angle, then Add (or press Enter). 0°=east, 90°=up. Chains from the last point.</div>
     </div>
     <div id="level-panel" role="dialog" aria-label="Storeys">
       <div class="lp-title">Storeys</div>

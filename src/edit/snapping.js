@@ -73,6 +73,41 @@ export function constrainAngle(anchor, target, stepDeg = 45, lengthStep = 0) {
   return { x: anchor.x + Math.cos(snappedAng) * len, z: anchor.z + Math.sin(snappedAng) * len };
 }
 
+// --- C1 · precise polar (length + angle) entry ------------------------------------------
+// The classic CAD "direct distance/angle entry": rather than eyeballing a click, a Pro user
+// types an exact length and heading for the next wall segment, so genuinely non-orthogonal
+// walls are precise instead of grid-approximate. All pure geometry — no model, no Three.js.
+//
+// Angle convention (shared by polarOffset ⇄ segmentPolar): degrees measured CCW from EAST
+// (+x) in the PLAN frame where screen-up (−z) is +90°, matching how the plan renders and how
+// the DXF export maps (x,z)→(x,−z). So 0° points right, 90° up, 180° left, −90°/270° down —
+// exactly what a user reading the plan expects.
+
+// Absolute point a distance `length` (m) from `anchor` at `angleDeg` in the plan frame.
+export function polarOffset(anchor, length, angleDeg) {
+  const rad = (Number(angleDeg) * Math.PI) / 180;
+  const len = Number(length);
+  return { x: anchor.x + Math.cos(rad) * len, z: anchor.z - Math.sin(rad) * len };
+}
+
+// Inverse of polarOffset: the length (m) and plan-frame angle (deg, normalized to (−180,180])
+// of the segment from → to. A zero-length segment reports length 0 and angle 0 (no direction).
+export function segmentPolar(from, to) {
+  const dx = to.x - from.x, dz = to.z - from.z;
+  const length = Math.hypot(dx, dz);
+  const angleDeg = length < 1e-12 ? 0 : normalizeAngleDeg((Math.atan2(-dz, dx) * 180) / Math.PI);
+  return { length, angleDeg };
+}
+
+// Normalize any degree value into (−180, 180]. Non-finite input → 0.
+export function normalizeAngleDeg(deg) {
+  let d = Number(deg);
+  if (!Number.isFinite(d)) return 0;
+  d = ((d % 360) + 360) % 360;   // → [0, 360)
+  if (d > 180) d -= 360;         // → (−180, 180]
+  return d === -180 ? 180 : d;
+}
+
 // Compose the enabled constraints for one pointer position.
 //   settings    — { grid, vertex, angle } (normalized internally)
 //   walls       — existing walls, for vertex snapping
