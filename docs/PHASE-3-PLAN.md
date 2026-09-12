@@ -1,6 +1,6 @@
 # Phase 3 — Depth behind the seam (build plan)
 
-*Status: **proposed — awaiting sign-off**. Phase 2 shipped a connected end-to-end skeleton ([`PHASE-2-COMPLETE.md`](./PHASE-2-COMPLETE.md)). Phase 3 adds **depth** to each stage — the features Phase 2 deliberately deferred behind the Simple/Pro seam. Nothing here changes the Phase 1 model contract or the lossless save; every slice adds an editing/read capability on top of it.*
+*Status: **COMPLETE — signed off in [`PHASE-3-COMPLETE.md`](./PHASE-3-COMPLETE.md)** (Groups A/B/C/D/E landed on integration branch `auto/2026-09-07` / PR #41; only F1 (Meshy, server-side) carries to Phase 4). Phase 2 shipped a connected end-to-end skeleton ([`PHASE-2-COMPLETE.md`](./PHASE-2-COMPLETE.md)). Phase 3 adds **depth** to each stage — the features Phase 2 deliberately deferred behind the Simple/Pro seam. Nothing here changes the Phase 1 model contract or the lossless save; every slice adds an editing/read capability on top of it.*
 
 ## Why this document exists
 
