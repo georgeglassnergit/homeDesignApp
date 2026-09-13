@@ -3,12 +3,46 @@ import { Brush, Evaluator, SUBTRACTION } from 'three-bvh-csg';
 import { wallLength } from '../core/model.js';
 import { roofFootprint, wallBounds, roofSolid, gableInfill, isPitched, resolveRidgeAlongX, DEFAULT_ROOF_PITCH } from '../core/roofShape.js';
 import { DEFAULTS } from '../core/model.js';
+import { wallQuad } from '../core/wallJoin.js';
 
 const _eval = new Evaluator();
 
-// Build a wall as a solid box along its centerline, then subtract each opening
-// (door/window) via CSG boolean — the same subtraction model IFC uses.
-export function buildWallMesh(wall, openings, elevation, material) {
+// Build the solid a wall occupies in plan. The footprint is a quad in plan {x,z}
+// (its plain ±½-thickness rectangle, OR — for C2 — a mitred quad from wallJoin so
+// adjoining corners meet gap-free and non-overlapping). We extrude it up to the
+// wall height and stand it on the ground plane. A degenerate/absent quad falls back
+// to the plain centreline box so a lone or zero-length wall behaves exactly as before.
+function wallPrismBrush(wall, quad, elevation, material) {
+  const { height } = wall;
+  const fp = (Array.isArray(quad) && quad.length === 4) ? quad : wallQuad(wall);
+  if (!fp) {
+    // zero-length / no direction: preserve the legacy centreline box (may be degenerate,
+    // exactly as before — validation rejects such walls upstream).
+    const len = wallLength(wall);
+    const box = new Brush(new THREE.BoxGeometry(len, height, wall.thickness), material);
+    box.position.set((wall.a.x + wall.b.x) / 2, elevation + height / 2, (wall.a.z + wall.b.z) / 2);
+    box.updateMatrixWorld();
+    return box;
+  }
+  // Shape in (x, -z): rotateX(-90°) then maps shape-Y→world-Z and the extrude depth→world-Y,
+  // laying the footprint flat in world XZ (matching buildFloorMesh's convention) and standing
+  // the prism from y=0 to y=height. The mesh is positioned at y=elevation.
+  const shape = new THREE.Shape();
+  fp.forEach((p, i) => (i === 0 ? shape.moveTo(p.x, -p.z) : shape.lineTo(p.x, -p.z)));
+  shape.closePath();
+  const geo = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false, steps: 1 });
+  geo.rotateX(-Math.PI / 2);
+  const brush = new Brush(geo, material);
+  brush.position.set(0, elevation, 0);
+  brush.updateMatrixWorld();
+  return brush;
+}
+
+// Build a wall as a solid prism over its (optionally mitred) plan footprint, then
+// subtract each opening (door/window) via CSG boolean — the same subtraction model
+// IFC uses. `quad` is the wall's mitred footprint from wallJoin (see buildGeometry);
+// omit it and the wall falls back to its plain ±½-thickness rectangle.
+export function buildWallMesh(wall, openings, elevation, material, quad) {
   const { a, b, thickness, height } = wall;
   const len = wallLength(wall);
   const angle = Math.atan2(b.z - a.z, b.x - a.x); // direction of the wall in plan
@@ -16,10 +50,7 @@ export function buildWallMesh(wall, openings, elevation, material) {
   const mx = (a.x + b.x) / 2, mz = (a.z + b.z) / 2;
   const dirx = Math.cos(angle), dirz = Math.sin(angle);
 
-  let result = new Brush(new THREE.BoxGeometry(len, height, thickness), material);
-  result.position.set(mx, elevation + height / 2, mz);
-  result.rotation.y = rotY;
-  result.updateMatrixWorld();
+  let result = wallPrismBrush(wall, quad, elevation, material);
 
   for (const op of openings) {
     const localX = op.offset + op.width / 2 - len / 2;  // along-wall offset from midpoint
