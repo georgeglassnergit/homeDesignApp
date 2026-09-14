@@ -18,6 +18,7 @@ import {
 import {
   runAdvisoryChecks, advisorySummary, ADVISORY_DISCLAIMER, DEFAULT_THRESHOLDS,
   checkCeilingHeights, checkRoomAreas, checkOpenings, checkStoreyHabitability,
+  checkNaturalLight,
 } from '../core/advisoryChecks.js';
 
 let pass = 0, fail = 0; const fails = [];
@@ -238,6 +239,69 @@ const squarePts = (side) => {
   // (advisoryChecks imports wallLength/polygonArea from model.js; a quick sanity that
   //  those are the same pure helpers keeps the dependency honest.)
   ok(typeof wallLength === 'function', 'wallLength is importable from the model (dependency intact)');
+}
+
+// ── 13. Natural light — glazing-to-floor-area ratio (E) ───────────────────────
+{
+  // helper: a level with a room of `side` m and one window of w×h on a wall.
+  const glazedLevel = (side, w, h) => {
+    const lvl = createLevel({ height: 2.7, rooms: [createRoom(squarePts(side))] });
+    const wall = createWall({ x: 0, z: 0 }, { x: 5, z: 0 });
+    lvl.walls.push(wall);
+    lvl.openings.push(createOpening(wall.id, 'window', { width: w, height: h }));
+    return lvl;
+  };
+
+  _resetIds();
+  // 36 m² floor, a single standard 1.68 m² window → 4.7%, under the 8% rule of thumb.
+  // Window is big-enough / low-silled, so ONLY the glazing-ratio check should fire here.
+  const under = runAdvisoryChecks(createProject({ levels: [glazedLevel(6, 1.4, 1.2)] }));
+  ok(has(under, 'storey-glazing-ratio'), 'windowed storey below 8% glazing → storey-glazing-ratio advisory');
+  ok(!has(under, 'window-egress-area') && !has(under, 'window-egress-sill'), 'the glazing case is isolated (no egress advisories on a standard window)');
+  ok(!has(under, 'storey-natural-light'), 'a storey WITH windows does not also trip the no-windows advisory');
+  const gf = forCode(under, 'storey-glazing-ratio')[0];
+  ok(gf && gf.measured === 1.68 && gf.threshold === 2.88 && gf.unit === 'm2',
+    'glazing finding carries measured glazing (1.68) + required area (8% of 36 = 2.88)');
+  ok(gf && gf.ref && gf.ref.kind === 'level' && gf.severity === 'advisory', 'glazing finding refs the storey, severity advisory');
+
+  _resetIds();
+  // 16 m² floor, same 1.68 m² window → 10.5%, comfortably over 8% → clean.
+  const okLight = runAdvisoryChecks(createProject({ levels: [glazedLevel(4, 1.4, 1.2)] }));
+  ok(!has(okLight, 'storey-glazing-ratio'), 'adequate glazing (>8% of floor) → no glazing advisory');
+
+  _resetIds();
+  // exactly at the ratio is NOT flagged (16 m² × 8% = 1.28 m² = a 1.6×0.8 window).
+  const exact = runAdvisoryChecks(createProject({ levels: [glazedLevel(4, 1.6, 0.8)] }));
+  ok(!has(exact, 'storey-glazing-ratio'), 'glazing exactly at the 8% ratio is clean');
+
+  _resetIds();
+  // no windows at all → storey-natural-light owns it; glazing-ratio must stay silent (no overlap).
+  const noWin = runAdvisoryChecks(createProject({ levels: [createLevel({ height: 2.7, rooms: [createRoom(squarePts(4))] })] }));
+  ok(has(noWin, 'storey-natural-light') && !has(noWin, 'storey-glazing-ratio'),
+    'no windows → storey-natural-light, never storey-glazing-ratio (checks do not overlap)');
+
+  _resetIds();
+  // a room-less storey with a window has no floor to light → no glazing finding, never throws.
+  const roomless = createLevel({ height: 2.7 });
+  const rw = createWall({ x: 0, z: 0 }, { x: 5, z: 0 }); roomless.walls.push(rw);
+  roomless.openings.push(createOpening(rw.id, 'window', { width: 0.4, height: 0.4 }));
+  ok(!has(runAdvisoryChecks(createProject({ levels: [roomless] })), 'storey-glazing-ratio'),
+    'a window with no enclosed floor → no glazing advisory');
+
+  _resetIds();
+  // threshold overridable: a 10.5% storey is clean by default but flags under a stricter 15%.
+  const p = createProject({ levels: [glazedLevel(4, 1.4, 1.2)] });
+  ok(!has(runAdvisoryChecks(p), 'storey-glazing-ratio'), '10.5% glazing clean under the default 8%');
+  ok(has(runAdvisoryChecks(p, { thresholds: { minGlazingRatio: 0.15 } }), 'storey-glazing-ratio'),
+    'raising minGlazingRatio to 15% flags the 10.5% storey');
+
+  _resetIds();
+  // standalone-callable, like the other check functions.
+  ok(checkNaturalLight(createProject({ levels: [glazedLevel(6, 1.4, 1.2)] }), DEFAULT_THRESHOLDS).length === 1,
+    'checkNaturalLight callable standalone');
+
+  // default threshold is present and sane.
+  ok(DEFAULT_THRESHOLDS.minGlazingRatio === 0.08, 'default minGlazingRatio is 8%');
 }
 
 // ── summary ───────────────────────────────────────────────────────────────────
