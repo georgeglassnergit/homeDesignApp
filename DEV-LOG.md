@@ -4,6 +4,15 @@
 
 ---
 
+## 2026-09-17 — Day 25, escalate off-GitHub: push-notify George directly (the merge is the sole blocker, PR comments haven't landed for 25 days)
+- **7th consecutive fully-blocked run; board unchanged.** Same four open PRs (#38 D2, #39 C2, #40 DXF, #41 the `auto/2026-09-07` integration branch that supersedes #38–#40 and carries C1 + the E2 glazing rule + the `PHASE-3-COMPLETE.md` sign-off). Nothing merged to `main` since **#35 (`77f91ea`, 08-23)**.
+- **Independently re-verified #41 today** on a fresh checkout of `auto/2026-09-07` (`963a300`): `git merge-base origin/main origin/auto/2026-09-07` == `origin/main` tip (`77f91ea`) → straight superset, **clean one-click merge, no rebase**; GitHub `mergeable_state: clean`; **no CI/status checks configured** (nothing technical is withholding the merge). Pure suite re-run here: **993 src (18 suites) + 33 phase2 = 1026, 0 fail**; `node --check src/main.js` clean.
+- **What's actually different this run: the escalation left GitHub.** For 25 days the block has been surfaced only in PR comments + DEV-LOG, which George evidently isn't seeing. This run sends a **direct push notification** (phone + inbox) — the channel designed to reach him — plus one concise decision-forcing comment on #41 that **offers to split the branch** in case its size (+2630/−28, 28 files, 14 commits) is what's giving him pause.
+- **Deliberately no new code, no fold-in, no 5th PR.** Phase 3 A–E landed + signed off; the only backlog item F1 (Meshy) is server-side/Phase-4 by design. Growing the branch further makes review harder, not easier. Docs-only log entry on #41's own branch; the pile stays flat.
+- **Next:** merge #41 → close #38–#40 → draft nothing further until it lands; the build is done, the merge cadence is the sole bottleneck. If George prefers smaller reviews, split #41 into per-feature PRs off `main` on request.
+
+---
+
 ## 2026-09-16 — Day 24, still one click from live: independent re-verify of #41 (1026/1026, clean), no new code, sharpen the escalation
 - **The block is now ~24 days and this is the 6th consecutive fully-blocked run.** `list_pull_requests(state=open)` returns the same four PRs — **#38** (D2 Outsource), **#39** (C2 mitred walls), **#40** (DXF engine), **#41** (the `auto/2026-09-07` integration branch that supersedes #38–#40 and carries C1 + the E2 glazing rule + the `PHASE-3-COMPLETE.md` sign-off). Nothing has merged to `main` since **#35 (`77f91ea`, 08-23)**.
 - **Deliberately no new code, no fold-in, no 5th PR.** Phase 3 Groups A–E are all landed on #41 and signed off; the only backlog item, F1 (Meshy), is server-side/deferred to Phase 4 by design. There is nothing left to build that isn't already in #41. The 09-11/09-12/09-14 runs folded C1 / the sign-off / the glazing rule onto #41; continuing to grow an already 28-file, +2620/−28 branch makes it **harder** to review, not easier. So this run adds only this docs-only log entry on #41's own branch — the pile stays flat.
