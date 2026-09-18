@@ -1,0 +1,41 @@
+name: CI
+
+# Runs the full engine-independent test suite on every push and pull request.
+# The suites are zero-dependency plain-Node (the pure core/edit/app/templates
+# modules never import Three.js), so there is nothing to install and no browser
+# to launch — checkout, pick Node, run. This gives every PR an automated green
+# check that mirrors exactly how each change is verified before it is opened.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: ['**']
+
+# Keep only the latest run per ref; cancel superseded in-flight runs.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test suite (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '22']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Run tests (no dependencies)
+        run: node automation/run-tests.mjs
