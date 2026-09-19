@@ -36,6 +36,7 @@ export const DEFAULT_THRESHOLDS = Object.freeze({
   minDoorHeight:       2.0,   // standard door head ≈ 2.0–2.1 m
   minEgressWindowArea: 0.5,   // emergency-egress opening ≈ 5.7 sq ft ≈ 0.53 m²
   maxEgressSill:       1.1,   // egress window sill ≈ ≤ 1.1 m off the floor
+  minGlazingRatio:     0.08,  // natural light: glazing ≈ ≥ 8% of floor area (IRC R303.1-ish)
 });
 
 // A single finding is plain, serializable data. `severity` is 'advisory' (a
@@ -184,6 +185,46 @@ export function checkStoreyHabitability(project) {
   return out;
 }
 
+// E. Natural light: a storey that HAS windows but whose total glazing is small
+//    relative to its floor area. Complements checkStoreyHabitability (which flags
+//    the "no windows at all" case) with the graduated glazing-ratio rule of thumb
+//    (~8% of floor area). Skipped when there is no enclosed floor to light, or no
+//    window at all (that is storey-natural-light's job) — so the two never overlap.
+export function checkNaturalLight(project, t) {
+  const out = [];
+  const levels = (project && Array.isArray(project.levels)) ? project.levels : [];
+  levels.forEach((lvl, i) => {
+    const rooms = (lvl && Array.isArray(lvl.rooms)) ? lvl.rooms : [];
+    let floorArea = 0;
+    for (const r of rooms) {
+      if (!isRoom(r)) continue;
+      const a = polygonArea(r.points);
+      if (a > 0) floorArea += a;
+    }
+    if (!(floorArea > 0)) return;               // nothing enclosed to light — skip
+    const openings = (lvl && Array.isArray(lvl.openings)) ? lvl.openings : [];
+    let glazing = 0, windowCount = 0;
+    for (const o of openings) {
+      if (!o || o.kind !== 'window') continue;
+      if (o.width > 0 && o.height > 0) { glazing += o.width * o.height; windowCount++; }
+    }
+    if (windowCount === 0) return;              // "no windows" is storey-natural-light's finding
+    const required = t.minGlazingRatio * floorArea;
+    if (glazing < required - 1e-9) {
+      const where = levelName(lvl, i);
+      const pct = Math.round((glazing / floorArea) * 100);
+      const reqPct = Math.round(t.minGlazingRatio * 100);
+      out.push(finding(
+        'storey-glazing-ratio', 'advisory',
+        { levelId: lvl.id, kind: 'level', id: lvl.id, where },
+        `${where} has about ${round2(glazing)} m² of window glazing for ${round2(floorArea)} m² of floor — about ${pct}%, under the ~${reqPct}% of floor area suggested for natural light.`,
+        round2(glazing), round2(required), 'm2',
+      ));
+    }
+  });
+  return out;
+}
+
 // ── the entry point ──────────────────────────────────────────────────────────
 // Run every advisory check over a project and return a flat, ordered result:
 //   { findings: [...], counts: {advisory, info, total}, byCode: {code: n},
@@ -198,6 +239,7 @@ export function runAdvisoryChecks(project, opts = {}) {
     ...checkRoomAreas(project, t),
     ...checkOpenings(project, t),
     ...checkStoreyHabitability(project),
+    ...checkNaturalLight(project, t),
   ];
   const counts = { advisory: 0, info: 0, total: findings.length };
   const byCode = {};
