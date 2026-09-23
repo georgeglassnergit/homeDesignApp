@@ -21,7 +21,9 @@ import { createDirtyTracker } from './app/dirty.js';
 import { planThumbnailSVG } from './app/thumbnail.js';
 import { exportObj, exportProjectJson, exportBaseName } from './core/exportObj.js';
 import { exportGltf, gltfBaseName } from './core/exportGltf.js';
+import { exportDxf, dxfBaseName } from './core/exportDxf.js';
 import { runAdvisoryChecks, advisorySummary, ADVISORY_DISCLAIMER } from './core/advisoryChecks.js';
+import { buildOutsourceBrief } from './core/outsourceBrief.js';
 
 const spike = { booted: false, built: false, sceneMeshes: 0, roundTripOk: false, counts: null, error: null };
 window.__app = spike;
@@ -437,6 +439,45 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       if (!on) toggleSnapPanel(false);
     }
 
+    // --- C1 · precise polar (length + angle) wall entry (Pro; part of the snap panel) ------
+    // Direct distance/angle entry: with the wall tool active and a start point clicked, the
+    // user types an exact length + heading and the controller commits that segment, chaining
+    // from the last point (edit/tools.js polarEntry). Length is parsed through the active units
+    // (metric or imperial); angle is plan-frame degrees (0°=east, 90°=up), the same convention
+    // the live readout below reports. Purely a drawing affordance — no new save field.
+    const polarLen = $('polar-len'), polarAng = $('polar-ang'), polarAdd = $('polar-add'),
+          polarLenUnit = $('polar-len-unit'), polarLive = $('polar-live');
+    const POLAR_DEFAULT_HINT = polarLive.textContent;
+    function syncPolarUnit() { polarLenUnit.textContent = app.units === UNIT.IMPERIAL ? 'ft' : 'm'; }
+    function commitPolarSegment() {
+      const lenM = parseLength(polarLen.value, app.units);
+      const ang = parseFloat(polarAng.value);
+      if (!Number.isFinite(lenM)) { hint('Enter a length (e.g. 3.5).'); polarLen.focus(); return; }
+      if (!Number.isFinite(ang)) { hint('Enter an angle in degrees (0°=east, 90°=up).'); polarAng.focus(); return; }
+      const added = controller.polarEntry(lenM, ang);
+      plan.draw(); updateStatus();
+      if (added) {
+        hint(`Added ${formatLength(lenM, app.units)} @ ${ang}° — type the next segment or click to continue.`);
+        polarLen.value = ''; polarLen.focus();   // ready for the next segment; keep the angle
+      } else {
+        hint(app.message || 'Pick the wall tool and click a start point first.');
+      }
+    }
+    polarAdd.addEventListener('click', (e) => { e.stopPropagation(); commitPolarSegment(); });
+    [polarLen, polarAng].forEach((el) => el.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); commitPolarSegment(); }
+    }));
+    // Live readout: while a wall chain is being drawn, show the cursor's current length + angle
+    // in the same units/convention as the entry fields, so the typed value matches the plan.
+    function updatePolarLive() {
+      if (!snapPanel.classList.contains('open')) return;
+      const seg = controller.currentSegmentPolar && controller.currentSegmentPolar();
+      polarLive.textContent = seg
+        ? `Now: ${formatLength(seg.length, app.units)} @ ${seg.angleDeg.toFixed(1)}°  (0°=east, 90°=up)`
+        : POLAR_DEFAULT_HINT;
+    }
+    planCanvasEl.addEventListener('pointermove', updatePolarLive);
+
     // --- Pro-seam multi-level (storey) editing (the "multi-level" feature) ---------------
     // The model has always carried Levels[] and the scene builder already stacks every level
     // by elevation; before this, the app hard-pinned levels[0]. Now a Pro user picks which
@@ -687,6 +728,14 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       downloadText(`${gltfBaseName(project)}.gltf`, gltf, 'model/gltf+json');
       toggleExportPanel(false);
     }
+    // E3+: DXF R12 — the one 2D vector interchange the 3D-massing exports (OBJ/glTF) don't cover.
+    // Pure core/exportDxf.js reuses the wallJoin mitre so the plan can't drift from the 3D view;
+    // it's the CAD drawing the D2 outsource brief most wants to travel with (drafters open 2D first).
+    function doExportDxf() {
+      const { dxf } = exportDxf(project, { units: app.units });
+      downloadText(`${dxfBaseName(project)}.dxf`, dxf, 'image/vnd.dxf');
+      toggleExportPanel(false);
+    }
     function positionExportPanel() {
       const r = exportBtn.getBoundingClientRect();
       exportPanel.style.left = Math.max(8, Math.min(r.left, innerWidth - 266)) + 'px';
@@ -702,6 +751,7 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
     addEventListener('click', () => toggleExportPanel(false));   // click-away closes
     $('export-obj').addEventListener('click', (e) => { e.stopPropagation(); doExportObj(); });
     $('export-gltf').addEventListener('click', (e) => { e.stopPropagation(); doExportGltf(); });
+    $('export-dxf').addEventListener('click', (e) => { e.stopPropagation(); doExportDxf(); });
     $('export-json').addEventListener('click', (e) => { e.stopPropagation(); doExportJson(); });
     function syncExportSeam() {
       const on = isAvailable('ifc-export', app.mode);
@@ -906,6 +956,64 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       else toggleUnderlayPanel(false);
     }
 
+    // --- D2: "Outsource" — compose a design brief to hand to a professional ---------------------
+    // The second onboarding path. There is NO backend here (guardrail: never touch backend deploy
+    // config); this is a content/UX helper. The intake modal collects a few OPTIONAL fields and
+    // shows a live preview of the plain-text brief the pure core (core/outsourceBrief.js) builds
+    // from the current model, then lets the user copy it or download it as a .txt to email/print.
+    const outsourceEl = $('outsource');
+    const outFields = {
+      name: $('out-name'), email: $('out-email'), phone: $('out-phone'),
+      style: $('out-style'), timeline: $('out-timeline'), notes: $('out-notes'),
+    };
+    const outPreview = $('out-preview'), outEmailWarn = $('out-email-warn'), outCopyBtn = $('out-copy'), outStatus = $('out-status');
+
+    function collectIntake() {
+      return {
+        name: outFields.name.value, email: outFields.email.value, phone: outFields.phone.value,
+        style: outFields.style.value, timeline: outFields.timeline.value, notes: outFields.notes.value,
+      };
+    }
+    let outCurrent = null;   // the last-built { text, filename, ... } for copy/download
+    function refreshOutsource() {
+      outCurrent = buildOutsourceBrief(project, collectIntake(), { units: app.units });
+      if (outPreview) outPreview.textContent = outCurrent.text;
+      // surface a typo'd e-mail (the pure layer drops it rather than trust it)
+      if (outEmailWarn) outEmailWarn.classList.toggle('show', !!outCurrent.intake.emailRejected);
+      if (outStatus) outStatus.textContent = '';
+      return outCurrent;
+    }
+    function openOutsource() {
+      refreshOutsource();
+      outsourceEl.classList.add('open');
+    }
+    function closeOutsource() { outsourceEl.classList.remove('open'); }
+
+    Object.values(outFields).forEach((el) => {
+      if (!el) return;
+      el.addEventListener('input', refreshOutsource);
+      el.addEventListener('keydown', (e) => e.stopPropagation());   // don't let Del/Ctrl-Z reach the canvas
+    });
+    if (outCopyBtn) outCopyBtn.addEventListener('click', async () => {
+      const brief = outCurrent || refreshOutsource();
+      let done = false;
+      try { if (navigator.clipboard && navigator.clipboard.writeText) { await navigator.clipboard.writeText(brief.text); done = true; } } catch { /* fall through */ }
+      if (!done && outPreview) {   // fallback: select the preview so the user can copy manually
+        const r = document.createRange(); r.selectNodeContents(outPreview);
+        const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+        try { done = document.execCommand && document.execCommand('copy'); } catch { /* ignore */ }
+      }
+      if (outStatus) outStatus.textContent = done ? 'Brief copied to the clipboard.' : 'Select the text above to copy it.';
+    });
+    const outDownloadBtn = $('out-download');
+    if (outDownloadBtn) outDownloadBtn.addEventListener('click', () => {
+      const brief = outCurrent || refreshOutsource();
+      downloadText(brief.filename, brief.text, 'text/plain');
+      if (outStatus) outStatus.textContent = `Saved ${brief.filename}.`;
+    });
+    const outCloseBtn = $('out-close');
+    if (outCloseBtn) outCloseBtn.addEventListener('click', closeOutsource);
+
     // --- Simple / Pro mode toggle (the single gate the whole UI reads from) ---
     const modeButtons = [...document.querySelectorAll('#modes button')];
     const syncModeButtons = () => modeButtons.forEach((b) => b.classList.toggle('active', b.dataset.mode === app.mode));
@@ -917,7 +1025,7 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
     const unitButtons = [...document.querySelectorAll('#units button')];
     const syncUnitButtons = () => unitButtons.forEach((b) => b.classList.toggle('active', b.dataset.units === app.units));
     unitButtons.forEach((b) => b.addEventListener('click', () => {
-      app.setUnits(b.dataset.units); syncUnitButtons(); renderInspector();
+      app.setUnits(b.dataset.units); syncUnitButtons(); syncPolarUnit(); renderInspector();
     }));
 
     // --- toolbar wiring ---
@@ -1040,8 +1148,8 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       grid.appendChild(card);
     }
     // Onboarding tiles — RoomSketcher's blank / template / import / outsource pattern.
-    // D1: "Import a plan" is now LIVE (loads a floor-plan underlay to trace over); "Outsource"
-    // stays a Phase 3+ coming-soon tile so the roadmap still reads.
+    // Both extra paths are now LIVE: D1 "Import a plan" (loads a floor-plan underlay to trace
+    // over) and D2 "Outsource" (composes a design brief to hand to a professional).
     {
       const imp = document.createElement('button');
       imp.className = 'tpl-card'; imp.id = 'tpl-import'; imp.title = 'Import a floor plan image and trace over it';
@@ -1049,15 +1157,13 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
         + `<div class="name">Import a plan</div><div class="desc">Trace an uploaded floor plan.</div>`;
       imp.addEventListener('click', () => { closePicker(); openUnderlayPicker(); });
       grid.appendChild(imp);
-    }
-    for (const soon of [
-      { label: 'Outsource', desc: 'Have your home drawn for you.' },
-    ]) {
-      const card = document.createElement('button');
-      card.className = 'tpl-card'; card.disabled = true;
-      card.innerHTML = `<div class="thumb">${planThumbnailSVG({ levels: [] })}</div>`
-        + `<div class="name">${soon.label}</div><div class="desc">${soon.desc}</div><div class="soon">Coming soon</div>`;
-      grid.appendChild(card);
+
+      const out = document.createElement('button');
+      out.className = 'tpl-card'; out.id = 'tpl-outsource'; out.title = 'Prepare a design brief to send to a professional';
+      out.innerHTML = `<div class="thumb">${planThumbnailSVG({ levels: [] })}</div>`
+        + `<div class="name">Outsource</div><div class="desc">Have your home drawn for you.</div>`;
+      out.addEventListener('click', () => { closePicker(); openOutsource(); });
+      grid.appendChild(out);
     }
 
     $('new').addEventListener('click', () => openPicker(false));
@@ -1074,6 +1180,7 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
 
     // --- keyboard: Esc closes the picker / ends a wall run, Del removes, Ctrl+Z/Y undo/redo ---
     addEventListener('keydown', (e) => {
+      if (outsourceEl.classList.contains('open')) { if (e.key === 'Escape') closeOutsource(); return; }
       if (pickerEl.classList.contains('open')) { if (e.key === 'Escape') closePicker(); return; }
       if (e.key === 'Escape') { if (plan.isCalibrating()) { cancelCalibrate(); hint('Calibration cancelled.'); } else if (app.camera === CAMERA.WALK) setCamera(CAMERA.ORBIT); else { controller.finishChain(); plan.draw(); } }
       else if (e.key === 'Delete' || e.key === 'Backspace') { controller.deleteSelection(); }
@@ -1090,6 +1197,7 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
     syncCameraButtons();
     syncModeButtons();
     syncUnitButtons();
+    syncPolarUnit();
     syncSnapSeam();
     syncLevelSeam();
     syncRoofSeam();
@@ -1145,7 +1253,12 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
         return { stored, materials: loc ? loc.materials : null, registered: !!(project.materials && project.materials[materialId]), msg: $('ins-msg') ? $('ins-msg').textContent : '' };
       },
       __setMode: (m) => { app.setMode(m); syncModeButtons(); syncSnapSeam(); syncLevelSeam(); syncRoofSeam(); syncMeasureSeam(); syncExportSeam(); syncChecksSeam(); syncUnderlaySeam(); renderInspector(); updateStatus(); },
-      __setUnits: (u) => { app.setUnits(u); syncUnitButtons(); renderInspector(); },
+      __setUnits: (u) => { app.setUnits(u); syncUnitButtons(); syncPolarUnit(); renderInspector(); },
+      // C1 polar-entry handles: commit a segment at an exact length(m)+angle(deg) and read the
+      // live rubber-band's length+angle — drive the same tool path the panel's Add button uses.
+      __polarEntry: (lenM, angleDeg) => { const added = controller.polarEntry(lenM, angleDeg); plan.draw(); updateStatus(); return { added, walls: (controller.level ? controller.level.walls.length : 0), message: app.message || null }; },
+      __currentSegmentPolar: () => controller.currentSegmentPolar(),
+      __polarSeamVisible: () => snapGroup.classList.contains('on') && !!polarAdd,
       // snapping/constraint seam handles (deterministic driving from the headless harness)
       __snap: () => app.snap, __setSnap: (partial) => { app.setSnap(partial); syncSnapControls(); plan.draw(); return app.snap; },
       __snapSeamVisible: () => snapGroup.classList.contains('on'),
@@ -1200,6 +1313,9 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       // E3+: glTF export (same Pro 'ifc-export' seam). Runs the pure exporter over the live project
       // and reports the doc + counts so the harness can verify without triggering a download.
       __exportGltf: () => exportGltf(project),
+      // E3+: DXF 2D-plan export (same Pro 'ifc-export' seam). Runs the pure exporter over the live
+      // project and returns the drawing + counts so the harness can verify without a download.
+      __exportDxf: () => exportDxf(project, { units: app.units }),
       // E2: advisory checks (Pro-seam 'code-checks'). __runChecks runs the pure engine over the live
       // project and returns the full result; __checksSeamVisible reports the group's Pro gate; the
       // panel-driven handles open it, read the rendered rows, and click a finding to prove select-to-fix.
@@ -1225,6 +1341,17 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
         return { imgWidth: u.imgWidth, imgHeight: u.imgHeight, metersPerPixel: u.metersPerPixel, center: u.center, opacity: u.opacity, widthM: rect.widthM, heightM: rect.heightM };
       },
       __underlayGroupVisible: () => underlayGroup.classList.contains('on'),
+      // D2: outsource design-brief handles — open the modal, fill the intake, read the live brief,
+      // and confirm the download filename, all without a real file dialog or clipboard.
+      __outsourceTileEnabled: () => { const t = $('tpl-outsource'); return !!(t && !t.disabled); },
+      __openOutsource: () => { openOutsource(); return { open: outsourceEl.classList.contains('open'), text: outPreview ? outPreview.textContent : '' }; },
+      __outsourceFill: (intake) => {
+        openOutsource();
+        for (const [k, el] of Object.entries(outFields)) { if (el && intake && k in intake) { el.value = intake[k]; } }
+        const b = refreshOutsource();
+        return { text: b.text, filename: b.filename, emailRejected: b.intake.emailRejected, preview: outPreview ? outPreview.textContent : '', emailWarn: !!(outEmailWarn && outEmailWarn.classList.contains('show')) };
+      },
+      __outsourceClose: () => { closeOutsource(); return outsourceEl.classList.contains('open'); },
       __underlayCalibrateVisible: () => !!(underlayCalibrateBtn && !underlayCalibrateBtn.classList.contains('hidden')),
       __setUnderlayOpacity: (pct) => { if (!underlayOpacity) return null; underlayOpacity.value = String(pct); underlayOpacity.dispatchEvent(new Event('input')); return plan.getUnderlay() ? plan.getUnderlay().opacity : null; },
       __removeUnderlay: () => { removeUnderlay(); return { hasUnderlay: plan.hasUnderlay(), groupVisible: underlayGroup.classList.contains('on') }; },

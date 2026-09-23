@@ -7,7 +7,7 @@
 import { TOOL } from '../app/state.js';
 import { createWall, createOpening, wallLength, findLevel, findWall, roomAtPoint } from '../core/model.js';
 import { addWall, moveWallVertex, removeWall, addOpening, removeOpening, composite } from './commands.js';
-import { snapPoint } from './snapping.js';
+import { snapPoint, polarOffset, segmentPolar } from './snapping.js';
 import { measureDistance } from './measure.js';
 
 const MIN_WALL = 0.05;        // ignore accidental zero-length wall clicks (m)
@@ -132,6 +132,40 @@ export class ToolController {
   }
 
   finishChain() { this._chain = null; this.preview = null; this._measure = null; }
+
+  // --- C1 · Pro precise polar entry (direct distance/angle) --------------------
+  // Commit the next wall corner at an EXACT length + angle from the current chain
+  // anchor, so a user can build precise non-orthogonal walls instead of eyeballing a
+  // click. `angleDeg` is plan-frame (CCW from east, screen-up = +90°) — the same
+  // convention `currentSegmentPolar()` reports for the live rubber-band, so the
+  // prefilled value matches what the user sees. Requires an in-progress chain (the
+  // user clicks a start corner first, exactly as click-drawing does); the committed
+  // wall then extends the chain so segments can be typed one after another. Length is
+  // already in meters (the caller parses the active units). Returns true iff a wall was
+  // added. Goes through the same createWall → addWall → history path as click-drawing,
+  // so it is fully undoable and adds no save field.
+  polarEntry(length, angleDeg) {
+    if (this.state.activeTool !== TOOL.DRAW_WALL) { this._emit('Switch to the wall tool to enter a segment'); return false; }
+    if (!this._chain) { this._emit('Click a start point, then enter length & angle'); return false; }
+    const len = Number(length);
+    if (!Number.isFinite(len) || len < MIN_WALL) { this._emit(`Enter a length of at least ${MIN_WALL} m`); return false; }
+    if (!Number.isFinite(Number(angleDeg))) { this._emit('Enter a valid angle in degrees'); return false; }
+    const prev = this._chain.prev;
+    const p = polarOffset(prev, len, angleDeg);
+    const wall = createWall(prev, p);
+    this.history.execute(addWall(this._lid(), wall));
+    this.rebuild();
+    this._chain.prev = p; this.preview = p;
+    return true;
+  }
+
+  // The live drawing segment's length + plan-frame angle for the Pro angle-entry
+  // readout (view-only; null when no wall chain / preview is active). Lets the UI show
+  // "what the cursor currently gives" in the same units/convention as polarEntry.
+  currentSegmentPolar() {
+    if (!this._chain || !this.preview) return null;
+    return segmentPolar(this._chain.prev, this.preview);
+  }
 
   // --- measure (Pro-seam ruler): click two plan points; read the distance ------
   // Pure VIEW state — no command, no model mutation, no rebuild. First click sets the
