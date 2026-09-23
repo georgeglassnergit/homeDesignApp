@@ -22,6 +22,7 @@ import { planThumbnailSVG } from './app/thumbnail.js';
 import { exportObj, exportProjectJson, exportBaseName } from './core/exportObj.js';
 import { exportGltf, gltfBaseName } from './core/exportGltf.js';
 import { exportDxf, dxfBaseName } from './core/exportDxf.js';
+import { buildSchedule, scheduleToCsv, scheduleBaseName } from './core/schedule.js';
 import { runAdvisoryChecks, advisorySummary, ADVISORY_DISCLAIMER } from './core/advisoryChecks.js';
 import { buildOutsourceBrief } from './core/outsourceBrief.js';
 
@@ -736,6 +737,13 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       downloadText(`${dxfBaseName(project)}.dxf`, dxf, 'image/vnd.dxf');
       toggleExportPanel(false);
     }
+    // Schedule (CSV): the spreadsheet-shaped take-off (rooms, openings, wall areas, summary) the
+    // geometry exports don't give. Pure core/schedule.js — approximate quantities, disclaimer baked
+    // into the file (constraint #6); opens in Excel / Numbers / Sheets.
+    function doExportSchedule() {
+      downloadText(`${scheduleBaseName(project)}.csv`, scheduleToCsv(project), 'text/csv');
+      toggleExportPanel(false);
+    }
     function positionExportPanel() {
       const r = exportBtn.getBoundingClientRect();
       exportPanel.style.left = Math.max(8, Math.min(r.left, innerWidth - 266)) + 'px';
@@ -752,6 +760,7 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
     $('export-obj').addEventListener('click', (e) => { e.stopPropagation(); doExportObj(); });
     $('export-gltf').addEventListener('click', (e) => { e.stopPropagation(); doExportGltf(); });
     $('export-dxf').addEventListener('click', (e) => { e.stopPropagation(); doExportDxf(); });
+    $('export-schedule').addEventListener('click', (e) => { e.stopPropagation(); doExportSchedule(); });
     $('export-json').addEventListener('click', (e) => { e.stopPropagation(); doExportJson(); });
     function syncExportSeam() {
       const on = isAvailable('ifc-export', app.mode);
@@ -1316,6 +1325,9 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       // E3+: DXF 2D-plan export (same Pro 'ifc-export' seam). Runs the pure exporter over the live
       // project and returns the drawing + counts so the harness can verify without a download.
       __exportDxf: () => exportDxf(project, { units: app.units }),
+      // Schedule (CSV) export (same Pro 'ifc-export' seam). Runs the pure builder over the live
+      // project and returns the CSV + structured schedule so the harness can verify without a download.
+      __exportSchedule: () => ({ csv: scheduleToCsv(project), schedule: buildSchedule(project) }),
       // E2: advisory checks (Pro-seam 'code-checks'). __runChecks runs the pure engine over the live
       // project and returns the full result; __checksSeamVisible reports the group's Pro gate; the
       // panel-driven handles open it, read the rendered rows, and click a finding to prove select-to-fix.
