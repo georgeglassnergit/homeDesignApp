@@ -18,7 +18,7 @@
 // only pure model helpers; there is no Three.js here.
 // ============================================================================
 
-import { polygonArea, wallLength } from './model.js';
+import { polygonArea, polygonMinWidth, wallLength } from './model.js';
 
 // The label every consumer must show near these findings. Not a legal notice —
 // a plain-language reminder that this is guidance, not certification.
@@ -32,6 +32,7 @@ export const ADVISORY_DISCLAIMER =
 export const DEFAULT_THRESHOLDS = Object.freeze({
   minCeilingHeight:    2.3,   // habitable-room ceiling ≈ 2.3–2.4 m in many codes
   minRoomArea:         6.5,   // habitable room ≈ 70 sq ft ≈ 6.5 m² (IRC-ish)
+  minRoomWidth:        2.1,   // habitable room least horizontal dimension ≈ 7 ft ≈ 2.13 m (IRC R304.2-ish)
   minDoorWidth:        0.76,  // ~30" leaf; accessible clear width wants ~0.81 m
   minDoorHeight:       2.0,   // standard door head ≈ 2.0–2.1 m
   minEgressWindowArea: 0.5,   // emergency-egress opening ≈ 5.7 sq ft ≈ 0.53 m²
@@ -92,6 +93,34 @@ export function checkRoomAreas(project, t) {
           { levelId: lvl.id, kind: 'room', id: r.id, where: `${levelName(lvl, i)} · ${r.name || 'Room'}` },
           `"${r.name || 'Room'}" is about ${round2(area)} m² — smaller than the ~${t.minRoomArea} m² typical for a habitable room (fine for a closet or bath).`,
           round2(area), t.minRoomArea, 'm2',
+        ));
+      }
+    }
+  });
+  return out;
+}
+
+// B2. Room proportions: a room with enough floor area to read as habitable, but so narrow at
+//    its tightest that it is not actually usable as one — the classic long thin "sliver" left
+//    by a mis-dragged wall, which the area check alone (a 0.9 m × 14 m space is 12.6 m²) cannot
+//    catch. Gated on area ≥ minRoomArea so a legitimately small closet/bath (already excused by
+//    the area check) is never double-flagged for being narrow. Worded as a usability nudge.
+export function checkRoomProportions(project, t) {
+  const out = [];
+  const levels = (project && Array.isArray(project.levels)) ? project.levels : [];
+  levels.forEach((lvl, i) => {
+    const rooms = (lvl && Array.isArray(lvl.rooms)) ? lvl.rooms : [];
+    for (const r of rooms) {
+      if (!isRoom(r)) continue;
+      const area = polygonArea(r.points);
+      if (!(area >= t.minRoomArea)) continue;   // small rooms are the area check's business, not this one
+      const width = polygonMinWidth(r.points);
+      if (width > 0 && width < t.minRoomWidth - 1e-9) {
+        out.push(finding(
+          'room-width', 'advisory',
+          { levelId: lvl.id, kind: 'room', id: r.id, where: `${levelName(lvl, i)} · ${r.name || 'Room'}` },
+          `"${r.name || 'Room'}" is only about ${round2(width)} m across at its narrowest — under the ~${t.minRoomWidth} m least width a habitable room usually needs to be usable (a long thin space may be fine as a hall).`,
+          round2(width), t.minRoomWidth, 'm',
         ));
       }
     }
@@ -237,6 +266,7 @@ export function runAdvisoryChecks(project, opts = {}) {
   const findings = [
     ...checkCeilingHeights(project, t),
     ...checkRoomAreas(project, t),
+    ...checkRoomProportions(project, t),
     ...checkOpenings(project, t),
     ...checkStoreyHabitability(project),
     ...checkNaturalLight(project, t),
