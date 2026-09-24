@@ -201,6 +201,54 @@ export function polygonPerimeter(points) {
   return per;
 }
 
+// Minimum width (m) of a plan polygon — the smallest distance between two parallel lines that
+// still enclose the shape, i.e. how narrow the room is at its tightest. This is what tells a
+// long thin "room" apart from a usable one: a 12 m² space can still be an unusable 0.9 m-wide
+// corridor, which polygonArea alone cannot see. Computed on the convex hull (so a concave
+// L-shape is measured across its overall extent, never falsely reported as a slit), as the
+// min over hull edges of the farthest vertex's perpendicular distance from that edge — the
+// standard rotating-calipers width. Returns 0 for a degenerate / collinear polygon (no width),
+// so a readout never shows NaN. Winding-independent. Pure geometry — companion to polygonArea.
+export function polygonMinWidth(points) {
+  if (!Array.isArray(points) || points.length < 3) return 0;
+  // Convex hull (Andrew's monotone chain) over the {x,z} plane, deduped.
+  const pts = points
+    .filter(p => p && Number.isFinite(p.x) && Number.isFinite(p.z))
+    .map(p => ({ x: p.x, z: p.z }))
+    .sort((a, b) => (a.x - b.x) || (a.z - b.z));
+  if (pts.length < 3) return 0;
+  const uniq = pts.filter((p, i) => i === 0 || p.x !== pts[i - 1].x || p.z !== pts[i - 1].z);
+  if (uniq.length < 3) return 0;
+  const cross = (o, a, b) => (a.x - o.x) * (b.z - o.z) - (a.z - o.z) * (b.x - o.x);
+  const lower = [];
+  for (const p of uniq) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
+    lower.push(p);
+  }
+  const upper = [];
+  for (let i = uniq.length - 1; i >= 0; i--) {
+    const p = uniq[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop();
+    upper.push(p);
+  }
+  const hull = lower.slice(0, -1).concat(upper.slice(0, -1));
+  if (hull.length < 3) return 0;               // collinear — no enclosing width
+  let minWidth = Infinity;
+  for (let i = 0, n = hull.length; i < n; i++) {
+    const p = hull[i], q = hull[(i + 1) % n];
+    const dx = q.x - p.x, dz = q.z - p.z;
+    const len = Math.hypot(dx, dz);
+    if (len < 1e-9) continue;
+    let far = 0;                               // farthest hull vertex from this edge's line
+    for (const r of hull) {
+      const dist = Math.abs((r.x - p.x) * dz - (r.z - p.z) * dx) / len;
+      if (dist > far) far = dist;
+    }
+    if (far < minWidth) minWidth = far;
+  }
+  return Number.isFinite(minWidth) ? minWidth : 0;
+}
+
 // Centroid {x,z} of a plan polygon — the point where a room's area label sits so it reads
 // inside the shape. Area-weighted for a valid polygon; falls back to the vertex average for a
 // degenerate/collinear one (< 3 points or zero area) so a label never lands at NaN/∞. Pure
