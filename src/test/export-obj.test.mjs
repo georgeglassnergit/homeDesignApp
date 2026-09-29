@@ -17,7 +17,7 @@ import {
 } from '../core/model.js';
 import {
   exportObj, wallMesh, roomSlabMesh, triangulate, buildMtl, hexToRgb01,
-  exportProjectJson, exportBaseName,
+  exportProjectJson, exportBaseName, roofMeshes, boxMesh,
 } from '../core/exportObj.js';
 
 let pass = 0, fail = 0; const fails = [];
@@ -115,11 +115,17 @@ function sampleProject() {
   const useLines = L.filter((l) => l.startsWith('usemtl '));
   ok(vLines.length === counts.vertices, 'vertex-line count matches reported count');
   ok(fLines.length === counts.faces, 'face-line count matches reported count');
-  ok(counts.objects === 5, 'one object per element (4 walls + 1 floor)');
-  ok(oLines.length === 5, '5 `o` groups emitted');
-  ok(useLines.length === 5, 'each object gets a usemtl');
-  // 4 walls (8 verts) + 1 rect floor slab (8 verts) = 40 vertices
-  ok(counts.vertices === 4 * 8 + 8, 'total vertices = 4 walls + 1 slab');
+  // The sample has a GABLE roof, now baked in as a shell + gable-end infill (2 parts).
+  const roofParts = roofMeshes(p.levels[0], p.levels[0].elevation + p.levels[0].height);
+  const roofVerts = roofParts.reduce((s, rp) => s + rp.mesh.verts.length, 0);
+  ok(counts.roofs === 2, 'gable roof → shell + gable-end infill (2 roof parts)');
+  ok(counts.objects === 5 + 2, 'one object per element (4 walls + 1 floor + roof shell + gable infill)');
+  ok(oLines.length === 7, '7 `o` groups emitted');
+  ok(useLines.length === 7, 'each object gets a usemtl');
+  ok(L.some((l) => l === 'o Ground__roof'), 'roof shell emitted as its own object');
+  ok(L.some((l) => l === 'o Ground__gable'), 'gable-end infill emitted as its own object');
+  // 4 walls (8 verts) + 1 rect floor slab (8 verts) + the baked roof parts
+  ok(counts.vertices === 4 * 8 + 8 + roofVerts, 'total vertices = 4 walls + 1 slab + roof parts');
   // every face index is a valid 1-based reference within total vertices
   let allInRange = true;
   for (const f of fLines) {
@@ -129,9 +135,70 @@ function sampleProject() {
   ok(allInRange, 'all face indices are 1-based and within range');
   ok(counts.openings === 1, 'reports the 1 uncut opening');
   ok(warnings.some((w) => /opening/.test(w)), 'warns openings are uncut');
-  ok(warnings.some((w) => /roof/.test(w)), 'warns roof not exported');
+  ok(!warnings.some((w) => /roof/.test(w)), 'no longer warns about the roof (it is baked in)');
   ok(warnings.some((w) => /furniture/.test(w)), 'warns furniture not exported');
   ok(L.some((l) => l.startsWith('# note:')), 'warnings are echoed as OBJ comments');
+})();
+
+// ===== roof baking — flat slab, pitched shell, robustness =====
+(() => {
+  const rect = () => [
+    createWall({ x: 0, z: 0 }, { x: 4, z: 0 }), createWall({ x: 4, z: 0 }, { x: 4, z: 3 }),
+    createWall({ x: 4, z: 3 }, { x: 0, z: 3 }), createWall({ x: 0, z: 3 }, { x: 0, z: 0 }),
+  ];
+
+  // boxMesh is a closed, outward-facing solid.
+  const bx = boxMesh(0, 2, 0, 1, 0, 3);
+  ok(bx.verts.length === 8 && bx.tris.length === 12, 'boxMesh is an 8-vert / 12-tri solid');
+  const outwardBox = (mesh, c) => mesh.tris.every(([i, j, k]) => {
+    const a = mesh.verts[i], b = mesh.verts[j], d = mesh.verts[k];
+    const u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    const v = [d[0] - a[0], d[1] - a[1], d[2] - a[2]];
+    const n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+    const g = [(a[0] + b[0] + d[0]) / 3 - c[0], (a[1] + b[1] + d[1]) / 3 - c[1], (a[2] + b[2] + d[2]) / 3 - c[2]];
+    return n[0] * g[0] + n[1] * g[1] + n[2] * g[2] > 0;
+  });
+  ok(outwardBox(bx, [1, 0.5, 1.5]), 'every boxMesh triangle faces outward from the centre');
+
+  // FLAT roof → one slab, overhung and sitting on the eave.
+  _resetIds();
+  const flatLvl = createLevel({ name: 'F', height: 2.7, walls: rect(), roof: createRoof({ type: 'flat', overhang: 0.3, thickness: 0.15 }) });
+  const fp = createProject({ levels: [flatLvl] }); stackElevations(fp.levels);
+  const flat = roofMeshes(flatLvl, 2.7);
+  ok(flat.length === 1 && flat[0].part === 'roof', 'flat roof → a single slab part');
+  ok(flat[0].mesh.verts.length === 8 && flat[0].mesh.tris.length === 12, 'flat slab is an 8-vert / 12-tri box');
+  const xs = flat[0].mesh.verts.map((v) => v[0]);
+  const zs = flat[0].mesh.verts.map((v) => v[2]);
+  const ys = flat[0].mesh.verts.map((v) => v[1]);
+  ok(near(Math.min(...xs), -0.3) && near(Math.max(...xs), 4.3), 'slab overhangs ±0.3 in X');
+  ok(near(Math.min(...zs), -0.3) && near(Math.max(...zs), 3.3), 'slab overhangs ±0.3 in Z');
+  ok(near(Math.min(...ys), 2.7) && near(Math.max(...ys), 2.85), 'slab sits on the eave, 0.15 m thick');
+  ok(exportObj(fp).counts.roofs === 1, 'flat roof reported in counts.roofs');
+
+  // GABLE roof → shell + infill; ridge rises above the eave.
+  _resetIds();
+  const gLvl = createLevel({ name: 'G', height: 2.7, walls: rect(), roof: createRoof({ type: 'gable', pitch: 30 }) });
+  const gable = roofMeshes(gLvl, 2.7);
+  ok(gable.length === 2 && gable[0].part === 'roof' && gable[1].part === 'gable', 'gable roof → shell + gable-end infill');
+  ok(gable[0].mesh.tris.length > 0 && gable[1].mesh.tris.length > 0, 'both gable parts carry geometry');
+  ok(Math.max(...gable[0].mesh.verts.map((v) => v[1])) > 2.7 + 1e-6, 'gable ridge rises above the eave');
+  ok(gable[1].material === 'wall', 'gable-end infill is in the wall material');
+
+  // HIP roof → single shell (no infill), ridge above the eave.
+  _resetIds();
+  const hLvl = createLevel({ name: 'H', height: 2.7, walls: [
+    createWall({ x: 0, z: 0 }, { x: 6, z: 0 }), createWall({ x: 6, z: 0 }, { x: 6, z: 4 }),
+    createWall({ x: 6, z: 4 }, { x: 0, z: 4 }), createWall({ x: 0, z: 4 }, { x: 0, z: 0 }),
+  ], roof: createRoof({ type: 'hip', pitch: 30 }) });
+  const hip = roofMeshes(hLvl, 2.7);
+  ok(hip.length === 1 && hip[0].part === 'roof', 'hip roof → a single shell part (no gable infill)');
+  ok(Math.max(...hip[0].mesh.verts.map((v) => v[1])) > 2.7 + 1e-6, 'hip ridge rises above the eave');
+  ok(hip[0].mesh.verts.every((v) => v.every(Number.isFinite)), 'hip shell vertices are all finite');
+
+  // Robustness — never throws, always empty on missing inputs.
+  ok(roofMeshes(createLevel({ name: 'N', walls: rect(), roof: null }), 2.7).length === 0, 'no roof → no roof parts');
+  ok(roofMeshes({ roof: createRoof({ type: 'flat' }), walls: [] }, 0).length === 0, 'roof but no walls → no roof parts');
+  ok(roofMeshes(null, 0).length === 0, 'null level → no roof parts (never throws)');
 })();
 
 // ===== exportObj — multi-storey base elevations =====
