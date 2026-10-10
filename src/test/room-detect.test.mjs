@@ -170,6 +170,63 @@ function signedArea(points) {
   ok(rooms[0] && signedArea(rooms[0].points) > 0, 'CW input still produces CCW output room');
 }
 
+// ── 12. X-crossing: scissor walls with no shared endpoint are split at the crossing ──
+{
+  // A 4×4 square with BOTH diagonals drawn across it. The diagonals cross at the centre (2,2)
+  // with no shared endpoint, so the crossing must be inserted as a node and both diagonals split
+  // — subdividing the interior into 4 triangles of 4 m² each. Before X-splitting the diagonals
+  // sliced the square without closing sub-faces, so it read as one undivided space.
+  const walls = [
+    seg(0, 0, 4, 0), seg(4, 0, 4, 4), seg(4, 4, 0, 4), seg(0, 4, 0, 0), // square
+    seg(0, 0, 4, 4), seg(0, 4, 4, 0),                                   // two diagonals (an X)
+  ];
+  const rooms = detectRooms(walls);
+  ok(rooms.length === 4, `square + crossing diagonals → 4 rooms (got ${rooms.length})`);
+  ok(rooms.every((r) => near(polygonArea(r.points), 4, 1e-6)), 'each triangular quarter is 4 m²');
+  ok(rooms.every((r) => signedArea(r.points) > 0), 'every quarter is CCW');
+  ok(near(rooms.reduce((s, r) => s + polygonArea(r.points), 0), 16, 1e-6), 'quarters sum to the 16 m² square');
+}
+
+// ── 13. Two rooms divided by a single wall that crosses the middle (a +) ──────────
+{
+  // An 8×4 outer rectangle with a vertical divider at x=4 whose ENDS overshoot the top and
+  // bottom edges (so they are true crossings, not endpoint T-junctions). The overshoot tails
+  // are spurs (dropped); the two 4×4 halves must still close.
+  const walls = [
+    seg(0, 0, 8, 0), seg(8, 0, 8, 4), seg(8, 4, 0, 4), seg(0, 4, 0, 0), // perimeter
+    seg(4, -1, 4, 5),                                                    // divider overshooting both edges
+  ];
+  const rooms = detectRooms(walls);
+  ok(rooms.length === 2, `overshooting divider → 2 rooms (got ${rooms.length})`);
+  ok(rooms.every((r) => near(polygonArea(r.points), 16, 1e-6)), 'each half is 16 m² (overshoot tails dropped as spurs)');
+}
+
+// ── 14. Crossing walls that enclose nothing → no room, never throws ──────────────
+{
+  // Two diagonals cross at (2,2) and split into four spurs; a disjoint far segment keeps the
+  // input at ≥3 walls so the crossing path actually runs. No wall closes a face → 0 rooms.
+  let threw = false;
+  let rooms = [];
+  try { rooms = detectRooms([seg(0, 0, 4, 4), seg(0, 4, 4, 0), seg(10, 10, 11, 11)]); }
+  catch (_) { threw = true; }
+  ok(!threw, 'crossing walls with no closed face never throw');
+  ok(rooms.length === 0, `crossing walls enclosing nothing → 0 rooms (got ${rooms.length})`);
+}
+
+// ── 15. A crossing near an existing corner stays a T-junction (no redundant node) ─
+{
+  // The divider's bottom end lands EXACTLY on the bottom edge (a genuine T at (4,0)); its top
+  // end overshoots the top edge (a true crossing at (4,4)). Mixed T + X on one wall still yields
+  // the two clean 4×4 halves — proving the endpoint-clearance guard routes each case correctly.
+  const walls = [
+    seg(0, 0, 8, 0), seg(8, 0, 8, 4), seg(8, 4, 0, 4), seg(0, 4, 0, 0),
+    seg(4, 0, 4, 5),                                                     // T at bottom, X at top
+  ];
+  const rooms = detectRooms(walls);
+  ok(rooms.length === 2, `mixed T+X divider → 2 rooms (got ${rooms.length})`);
+  ok(rooms.every((r) => near(polygonArea(r.points), 16, 1e-6)), 'both halves 16 m² with mixed junctions');
+}
+
 // ── summary ───────────────────────────────────────────────────────────────────
 if (fail === 0) console.log(`\nALL PASS — ${pass} passed, 0 failed`);
 else { console.log(`\nFAILED — ${pass} passed, ${fail} failed`); for (const f of fails) console.log('  · ' + f); process.exit(1); }

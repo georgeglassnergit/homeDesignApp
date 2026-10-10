@@ -81,9 +81,13 @@ function sampleProject() {
   const g = res.json;
   ok(g.asset && g.asset.version === '2.0', 'asset.version is "2.0"');
   ok(g.scene === 0 && Array.isArray(g.scenes) && g.scenes.length === 1, 'a single default scene at index 0');
-  ok(Array.isArray(g.nodes) && g.nodes.length === 5, 'five nodes (4 walls + 1 floor)');
-  ok(Array.isArray(g.meshes) && g.meshes.length === 5, 'five meshes (one per element)');
-  ok(g.scenes[0].nodes.length === 5, 'the scene references all five nodes');
+  // 4 walls + 1 floor + a baked gable roof (shell + gable-end infill) = 7 elements.
+  ok(Array.isArray(g.nodes) && g.nodes.length === 7, 'seven nodes (4 walls + 1 floor + roof shell + gable infill)');
+  ok(Array.isArray(g.meshes) && g.meshes.length === 7, 'seven meshes (one per element)');
+  ok(g.scenes[0].nodes.length === 7, 'the scene references all seven nodes');
+  ok(res.counts.roofs === 2, 'gable roof baked as 2 parts (shell + infill)');
+  ok(g.meshes.some((m) => m.name === 'Ground__roof') && g.meshes.some((m) => m.name === 'Ground__gable'),
+    'roof shell and gable infill are named meshes in the document');
   ok(g.buffers.length === 1 && typeof g.buffers[0].uri === 'string', 'one embedded buffer with a data URI');
   ok(/^data:application\/octet-stream;base64,/.test(g.buffers[0].uri), 'buffer uri is a base64 octet-stream data URI');
   ok(JSON.parse(res.gltf).asset.version === '2.0', 'res.gltf is the JSON string of the same doc');
@@ -221,7 +225,7 @@ function sampleProject() {
   proj.furniture = [{ id: 'f1', src: 'chair.glb' }];
   const res = exportGltf(proj);
   ok(res.warnings.some(w => /opening/.test(w)), 'openings-uncut warning present');
-  ok(res.warnings.some(w => /roof/.test(w)), 'roof-not-exported warning present');
+  ok(!res.warnings.some(w => /roof/.test(w)), 'no roof-not-exported warning (the roof is baked in)');
   ok(res.warnings.some(w => /furniture/.test(w)), 'furniture-not-exported warning present');
 }
 
