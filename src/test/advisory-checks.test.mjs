@@ -17,7 +17,7 @@ import {
 } from '../core/model.js';
 import {
   runAdvisoryChecks, advisorySummary, ADVISORY_DISCLAIMER, DEFAULT_THRESHOLDS,
-  checkCeilingHeights, checkRoomAreas, checkOpenings, checkStoreyHabitability,
+  checkCeilingHeights, checkRoomAreas, checkRoomProportions, checkOpenings, checkStoreyHabitability,
   checkNaturalLight,
 } from '../core/advisoryChecks.js';
 
@@ -302,6 +302,61 @@ const squarePts = (side) => {
 
   // default threshold is present and sane.
   ok(DEFAULT_THRESHOLDS.minGlazingRatio === 0.08, 'default minGlazingRatio is 8%');
+}
+
+// ── 14. Room proportions — narrow-but-large "sliver" rooms (B2) ───────────────
+{
+  // a rect room `w` × `d` (m) on one level; area = w*d, min width = min(w,d).
+  const rectRoom = (w, d, name) => {
+    const pts = [{ x: 0, z: 0 }, { x: w, z: 0 }, { x: w, z: d }, { x: 0, z: d }];
+    return createLevel({ height: 2.7, rooms: [createRoom(pts, { name })] });
+  };
+
+  _resetIds();
+  // 1.4 m × 9 m = 12.6 m² — big enough to READ habitable (area check stays silent), but only
+  // 1.4 m across, under the 2.1 m least width → room-width fires, and ONLY room-width.
+  const slim = runAdvisoryChecks(createProject({ levels: [rectRoom(1.4, 9, 'Sun corridor')] }));
+  ok(has(slim, 'room-width'), 'a large-area but 1.4 m-narrow room → room-width advisory');
+  ok(!has(slim, 'room-area'), 'the sliver is NOT also flagged small (area 12.6 m² ≥ 6.5)');
+  const rw = forCode(slim, 'room-width')[0];
+  ok(rw && rw.measured === 1.4 && rw.threshold === 2.1 && rw.unit === 'm', 'room-width finding carries measured width (1.4) + threshold (2.1)');
+  ok(rw && rw.ref && rw.ref.kind === 'room' && rw.severity === 'advisory', 'room-width refs the room, severity advisory');
+  ok(rw && /Sun corridor/.test(rw.message), 'the message names the room');
+
+  _resetIds();
+  // a comfortable 4 m × 4 m room (16 m², 4 m wide) is clean on both area and width.
+  const roomy = runAdvisoryChecks(createProject({ levels: [rectRoom(4, 4, 'Living')] }));
+  ok(!has(roomy, 'room-width') && !has(roomy, 'room-area'), 'a 4×4 m room trips neither area nor width');
+
+  _resetIds();
+  // a small closet (1.2 m × 1.2 m = 1.44 m², under minRoomArea) is the AREA check's business,
+  // never double-flagged for being narrow — room-width must stay silent below minRoomArea.
+  const closet = runAdvisoryChecks(createProject({ levels: [rectRoom(1.2, 1.2, 'Closet')] }));
+  ok(has(closet, 'room-area') && !has(closet, 'room-width'), 'a small closet flags area only, not width (no double-flag)');
+
+  _resetIds();
+  // exactly at the 2.1 m width is NOT flagged (2.1 m × 4 m = 8.4 m²).
+  const exact = runAdvisoryChecks(createProject({ levels: [rectRoom(2.1, 4, 'Galley')] }));
+  ok(!has(exact, 'room-width'), 'a room exactly at the 2.1 m least width is clean');
+
+  _resetIds();
+  // threshold overridable: the 2.1 m-wide galley is clean by default but flags under a 2.4 m rule.
+  const galley = createProject({ levels: [rectRoom(2.1, 4, 'Galley')] });
+  ok(!has(runAdvisoryChecks(galley), 'room-width'), '2.1 m galley clean under the default 2.1 m');
+  ok(has(runAdvisoryChecks(galley, { thresholds: { minRoomWidth: 2.4 } }), 'room-width'),
+    'raising minRoomWidth to 2.4 m flags the 2.1 m galley');
+
+  _resetIds();
+  // standalone-callable, like the other check functions; and never throws on junk input.
+  ok(checkRoomProportions(createProject({ levels: [rectRoom(1.4, 9, 'X')] }), DEFAULT_THRESHOLDS).length === 1,
+    'checkRoomProportions callable standalone');
+  let threw = false;
+  for (const b of [undefined, null, {}, { levels: [null, { rooms: [null, { points: [{ x: 0, z: 0 }] }] }] }]) {
+    try { if (!Array.isArray(checkRoomProportions(b, DEFAULT_THRESHOLDS))) threw = true; } catch { threw = true; }
+  }
+  ok(!threw, 'checkRoomProportions never throws on malformed/partial input');
+
+  ok(DEFAULT_THRESHOLDS.minRoomWidth === 2.1, 'default minRoomWidth is 2.1 m');
 }
 
 // ── summary ───────────────────────────────────────────────────────────────────

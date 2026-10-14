@@ -13,12 +13,15 @@
 //     hair apart after float math), so a shared corner is ONE graph node;
 //   • a wall whose endpoint lands part-way along another wall (a T-junction) splits that wall,
 //     so the junction is a real node and the faces on both sides close;
+//   • two walls that cross scissor-style with no shared endpoint (an X-crossing) are split at
+//     the crossing point, so the faces on all four sides close (a novice who drags one wall
+//     across another still gets measurable rooms, not one big face with a slash through it);
 //   • dangling walls / spurs trace an out-and-back degenerate face (zero area) and are dropped;
 //   • duplicate/zero-length walls are ignored.
 //
 // NOT handled (out of scope — Group C territory, and the CSG guardrails already prefer clean
-// corners): two walls that cross scissor-style with no shared endpoint are not split at the
-// crossing. Such inputs simply yield no face through the crossing; they never crash.
+// corners): collinear walls that partially overlap are not merged/clipped (only exact
+// duplicates and endpoint-on-segment T-junctions are). Such inputs never crash.
 //
 // The detector is derived-on-read: it returns plain {points:[{x,z}...]} polygons. A caller wires
 // them to createRoom(...) if/when it wants named, saved rooms — detection itself stores nothing.
@@ -49,6 +52,27 @@ function pointOnSegment(p, a, b, tol) {
   return t;
 }
 
+// Proper interior crossing of segments a→b and c→d. Returns the crossing point {x,z} ONLY when
+// the two segments cross strictly INSIDE both — clear of every endpoint by more than tol — and
+// returns null for parallel, collinear, or merely-touching-at-an-endpoint pairs. A crossing that
+// lands on (or within tol of) an endpoint is really a T-junction, already handled by
+// pointOnSegment, so it is intentionally rejected here to avoid inserting a redundant node.
+function segmentCrossing(a, b, c, d, tol) {
+  const rx = b.x - a.x, rz = b.z - a.z;
+  const sx = d.x - c.x, sz = d.z - c.z;
+  const lenR = Math.hypot(rx, rz), lenS = Math.hypot(sx, sz);
+  if (lenR < tol || lenS < tol) return null;          // degenerate segment
+  const denom = rx * sz - rz * sx;
+  if (Math.abs(denom) < 1e-12) return null;           // parallel or collinear
+  const qpx = c.x - a.x, qpz = c.z - a.z;
+  const t = (qpx * sz - qpz * sx) / denom;            // parameter along a→b
+  const u = (qpx * rz - qpz * rx) / denom;            // parameter along c→d
+  const tolT = tol / lenR, tolU = tol / lenS;         // keep clear of endpoints in world units
+  if (t <= tolT || t >= 1 - tolT) return null;
+  if (u <= tolU || u >= 1 - tolU) return null;
+  return { x: a.x + t * rx, z: a.z + t * rz };
+}
+
 // Build the merged node set + undirected edges from wall centrelines. Returns {nodes, edges}
 // where nodes is [{x,z}] and edges is a Set of "i:j" (i<j) index pairs.
 function buildGraph(walls, tol) {
@@ -69,11 +93,31 @@ function buildGraph(walls, tol) {
     edges.add(edgeKey(i, j));
   }
 
-  // T-junction splitting: a node that lies part-way along an edge splits that edge in two.
-  // Iterate to a fixed point (a split can expose further splits).
+  // Split edges at interior junctions until nothing changes (a split can expose further splits):
+  //   (a) X-crossing — two edges that scissor across each other with no shared node. We insert
+  //       the crossing point as a node; the T-split pass below then divides both edges at it.
+  //   (b) T-junction — a node that lies part-way along an edge splits that edge in two.
   let changed = true;
   while (changed) {
     changed = false;
+
+    // (a) insert any missing X-crossing node (non-adjacent edges only; a shared corner is not a
+    // crossing). Adds a node but no edges — the T-split pass then closes the faces around it.
+    const edgeList = Array.from(edges);
+    for (let e1 = 0; e1 < edgeList.length; e1++) {
+      const [i1, j1] = edgeList[e1].split(':').map(Number);
+      for (let e2 = e1 + 1; e2 < edgeList.length; e2++) {
+        const [i2, j2] = edgeList[e2].split(':').map(Number);
+        if (i1 === i2 || i1 === j2 || j1 === i2 || j1 === j2) continue;   // share a node
+        const p = segmentCrossing(nodes[i1], nodes[j1], nodes[i2], nodes[j2], tol);
+        if (!p) continue;
+        const before = nodes.length;
+        findOrAdd(p);                                  // dedupes: only new crossings add a node
+        if (nodes.length > before) changed = true;
+      }
+    }
+
+    // (b) T-junction split: the closest interior node divides an edge in two.
     for (const key of Array.from(edges)) {
       const [ai, bi] = key.split(':').map(Number);
       const a = nodes[ai], b = nodes[bi];

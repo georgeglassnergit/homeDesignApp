@@ -12,10 +12,17 @@
 //   • Openings are NOT cut into the OBJ walls — the app's CSG cut lives in the Three.js
 //     view layer; a pure export exports clean solid primitives (the massing), same
 //     watertight boxes the CSG consumes. Doors/windows are recorded as a comment count.
-//   • Roof shells and external-GLB furniture are not baked into the OBJ (roof math lives
-//     in roofShape.js; furniture is a referenced asset). Both are reported as warnings.
+//   • Roof shells ARE baked in (flat slab, or the pitched gable/hip shell + gable-end
+//     infill) by reusing the pure shape math in roofShape.js — the same vertices the
+//     view layer renders. External-GLB furniture is a referenced asset and stays a warning.
 // Everything here is pure geometry on the plan model, so it is fully unit-testable
 // without a browser or renderer.
+
+import {
+  roofFootprint, wallBounds, resolveRidgeAlongX, isPitched, roofSolid, gableInfill,
+  DEFAULT_ROOF_PITCH,
+} from './roofShape.js';
+import { DEFAULTS } from './model.js';
 
 // ---- small helpers ---------------------------------------------------------
 
@@ -146,6 +153,90 @@ export function roomSlabMesh(room, baseY = 0, thickness = 0.05) {
   return { verts, tris };
 }
 
+// ---- roof meshes (mirror src/build/geometry.js buildRoofMesh, but pure) -----
+
+// Convert a non-indexed triangle soup (9 numbers per triangle, as roofShape.js
+// emits) into the { verts, tris } mesh shape the exporters consume. Each triangle
+// keeps its own three vertices — flat-shaded, exactly how the view layer renders the
+// roof shell — so the outward winding roofShape already fixed is preserved verbatim.
+export function soupToMesh(positions) {
+  const verts = [], tris = [];
+  const n = Array.isArray(positions) ? positions.length : 0;
+  const triCount = Math.floor(n / 9);
+  for (let t = 0; t < triCount; t++) {
+    const o = t * 9, base = verts.length;
+    verts.push([positions[o], positions[o + 1], positions[o + 2]]);
+    verts.push([positions[o + 3], positions[o + 4], positions[o + 5]]);
+    verts.push([positions[o + 6], positions[o + 7], positions[o + 8]]);
+    tris.push([base, base + 1, base + 2]);
+  }
+  return { verts, tris };
+}
+
+// An axis-aligned box [x0,x1]×[y0,y1]×[z0,z1] as a closed solid — 8 verts, 12
+// outward-facing triangles. This is the flat-roof slab, the same shape the view
+// layer builds with a BoxGeometry, expressed in the export's { verts, tris } form.
+export function boxMesh(x0, x1, y0, y1, z0, z1) {
+  const verts = [
+    [x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1], // bottom ring 0..3
+    [x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1], // top ring    4..7
+  ];
+  const tris = [
+    [0, 1, 2], [0, 2, 3],   // bottom (−Y)
+    [4, 6, 5], [4, 7, 6],   // top    (+Y)
+    [0, 4, 5], [0, 5, 1],   // −Z
+    [3, 2, 6], [3, 6, 7],   // +Z
+    [1, 6, 2], [1, 5, 6],   // +X
+    [0, 3, 7], [0, 7, 4],   // −X
+  ];
+  return { verts, tris };
+}
+
+// Build the roof geometry for one level as an array of { part, material, mesh }.
+// Pure mirror of src/build/geometry.js (buildRoofMesh + buildGableInfillMesh): a flat
+// roof → one slab; a gable/hip roof → the pitched shell, plus (for a gable) the two
+// triangular gable-end wall panels so the ends don't read as open voids. `eaveY` is the
+// top of the walls (this storey's base + height) in the export's coordinate frame.
+// Returns [] when the level has no roof or no walls, and never throws on partial data.
+export function roofMeshes(level, eaveY) {
+  const out = [];
+  const roof = level && level.roof;
+  const walls = (level && level.walls) || [];
+  if (!roof || !walls.length) return out;
+  const type = roof.type || 'flat';
+
+  if (isPitched(type)) {
+    const fp = roofFootprint(level);
+    if (!fp) return out;
+    const pitch = roof.pitch ?? DEFAULT_ROOF_PITCH;
+    // Resolve the ridge axis from the bare wall bounds — the same basis roofFootprint
+    // used — and pass a CONCRETE ridge so footprint and shell agree (matches the view layer).
+    const ridge = resolveRidgeAlongX(wallBounds(level), roof.ridge ?? 'auto') ? 'x' : 'z';
+    const shell = soupToMesh(roofSolid(type, fp, { baseY: eaveY, pitch, ridge }).positions);
+    if (shell.verts.length) out.push({ part: 'roof', material: roof.material || 'roof', mesh: shell });
+    if (type === 'gable') {
+      const thickness = (walls[0] && walls[0].thickness) || DEFAULTS.wall.thickness;
+      const gi = soupToMesh(
+        gableInfill('gable', fp, wallBounds(level), { baseY: eaveY, pitch, ridge, thickness }).positions,
+      );
+      if (gi.verts.length) out.push({ part: 'gable', material: (walls[0] && walls[0].material) || 'wall', mesh: gi });
+    }
+    return out;
+  }
+
+  // flat slab — wall extent expanded uniformly by the overhang, thickness above the eave.
+  const b = wallBounds(level);
+  if (!b) return out;
+  const o = roof.overhang || 0;
+  const thickness = roof.thickness ?? DEFAULTS.roof.thickness;
+  out.push({
+    part: 'roof',
+    material: roof.material || 'roof',
+    mesh: boxMesh(b.x0 - o, b.x1 + o, eaveY, eaveY + thickness, b.z0 - o, b.z1 + o),
+  });
+  return out;
+}
+
 // ---- OBJ assembly ----------------------------------------------------------
 
 function fmt(v) {
@@ -179,10 +270,10 @@ export function exportObj(project, opts = {}) {
   const lines = [];
   const usedMaterials = new Set();
   let vbase = 0;                 // running global vertex count (OBJ is 1-indexed)
-  let objects = 0, groups = 0, faceCount = 0, openingCount = 0;
+  let objects = 0, groups = 0, faceCount = 0, openingCount = 0, roofParts = 0;
 
   lines.push(`# Roomclip export — ${(project && project.name) || 'Untitled home'}`);
-  lines.push('# Wavefront OBJ · units: metres · Y up · building massing (walls + floors)');
+  lines.push('# Wavefront OBJ · units: metres · Y up · building massing (walls + floors + roofs)');
   lines.push(`mtllib ${mtlName}`);
 
   const emit = (name, material, mesh) => {
@@ -207,12 +298,14 @@ export function exportObj(project, opts = {}) {
     const tag = sanitize(lvl.name || lvl.id || `L${li}`);
     for (const w of (lvl.walls || [])) emit(`${tag}__wall_${sanitize(w.id)}`, w.material || 'wall', wallMesh(w, baseY));
     for (const r of (lvl.rooms || [])) emit(`${tag}__floor_${sanitize(r.id)}`, r.material || 'floor', roomSlabMesh(r, baseY, slabThickness));
+    // Roof sits on top of the walls: the eave is this storey's base + its height.
+    const eaveY = baseY + (lvl.height || 0);
+    for (const rp of roofMeshes(lvl, eaveY)) { emit(`${tag}__${rp.part}`, rp.material, rp.mesh); roofParts++; }
     openingCount += (lvl.openings || []).length;
   }
 
   const warnings = [];
   if (openingCount) warnings.push(`${openingCount} opening(s) left uncut (massing export — openings are a view-layer CSG cut)`);
-  if (levels.some((l) => l.roof)) warnings.push('roof shell(s) not exported (massing export — walls + floors only)');
   if (project && Array.isArray(project.furniture) && project.furniture.length) {
     warnings.push(`${project.furniture.length} furniture item(s) not exported (external GLB assets)`);
   }
@@ -223,7 +316,7 @@ export function exportObj(project, opts = {}) {
   return {
     obj,
     mtl,
-    counts: { objects, groups, vertices: vbase, faces: faceCount, materials: usedMaterials.size, openings: openingCount },
+    counts: { objects, groups, vertices: vbase, faces: faceCount, materials: usedMaterials.size, openings: openingCount, roofs: roofParts },
     warnings,
   };
 }

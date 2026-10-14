@@ -15,15 +15,16 @@
 // Deliberate scope (identical to the OBJ export, kept honest):
 //   • Openings are NOT cut — the CSG cut lives in the Three.js view layer; a pure export
 //     ships the clean watertight primitives (the massing) the CSG consumes. Reported as a note.
-//   • Roof shells and external-GLB furniture are not baked in (roof math is in roofShape.js;
-//     furniture is a referenced asset). Both are reported as warnings.
+//   • Roof shells ARE baked in — the same flat slab / pitched shell + gable infill the OBJ
+//     path bakes, via the shared roofMeshes() helper, so the two exporters stay identical.
+//     External-GLB furniture is a referenced asset and stays a warning.
 //
 // Purity / save contract: reads the plan model only, returns a string + counts, mutates
 // nothing, adds no save field, never throws on a malformed/partial project. No Three.js, and
 // no Node-only APIs (base64 is encoded by a portable table below, not Buffer/btoa), so it runs
 // identically under Node (the test suite) and in the browser (the app).
 
-import { wallMesh, roomSlabMesh, hexToRgb01 } from './exportObj.js';
+import { wallMesh, roomSlabMesh, hexToRgb01, roofMeshes } from './exportObj.js';
 
 // ---- portable base64 (no Buffer, no btoa — identical in Node and the browser) ----
 
@@ -103,7 +104,7 @@ export function exportGltf(project, opts = {}) {
   const chunks = [];                       // { bytes: Uint8Array } in buffer order
   let byteLength = 0;                      // running buffer length (kept 4-byte aligned)
 
-  let vertexTotal = 0, triangleTotal = 0, openingCount = 0;
+  let vertexTotal = 0, triangleTotal = 0, openingCount = 0, roofParts = 0;
 
   // Resolve (or lazily create) the glTF material index for a project material id.
   const materialFor = (id) => {
@@ -196,6 +197,9 @@ export function exportGltf(project, opts = {}) {
     const tag = sanitize(lvl.name || lvl.id || `L${li}`);
     for (const w of (lvl.walls || [])) { if (!w || !w.a || !w.b) continue; emit(`${tag}__wall_${sanitize(w.id)}`, w.material || 'wall', wallMesh(w, baseY)); }
     for (const r of (lvl.rooms || [])) { if (!r || !Array.isArray(r.points)) continue; emit(`${tag}__floor_${sanitize(r.id)}`, r.material || 'floor', roomSlabMesh(r, baseY, slabThickness)); }
+    // Roof sits on top of the walls: the eave is this storey's base + its height.
+    const eaveY = baseY + (lvl.height || 0);
+    for (const rp of roofMeshes(lvl, eaveY)) { emit(`${tag}__${rp.part}`, rp.material, rp.mesh); roofParts++; }
     openingCount += (lvl.openings || []).length;
   }
 
@@ -209,7 +213,6 @@ export function exportGltf(project, opts = {}) {
 
   const warnings = [];
   if (openingCount) warnings.push(`${openingCount} opening(s) left uncut (massing export — openings are a view-layer CSG cut)`);
-  if (levels.some((l) => l && l.roof)) warnings.push('roof shell(s) not exported (massing export — walls + floors only)');
   if (project && Array.isArray(project.furniture) && project.furniture.length) {
     warnings.push(`${project.furniture.length} furniture item(s) not exported (external GLB assets)`);
   }
@@ -240,7 +243,7 @@ export function exportGltf(project, opts = {}) {
     json: doc,
     counts: {
       meshes: meshes.length, nodes: nodes.length, materials: gltfMaterials.length,
-      vertices: vertexTotal, triangles: triangleTotal, byteLength, openings: openingCount,
+      vertices: vertexTotal, triangles: triangleTotal, byteLength, openings: openingCount, roofs: roofParts,
     },
     warnings,
   };

@@ -8,7 +8,7 @@
 import {
   createProject, createLevel, createWall, createOpening, createRoof, createRoom, validateProject,
   serialize, deserialize, wallLength, findLevel, findWall, findOpening, findRoom,
-  polygonArea, polygonPerimeter, polygonCentroid, stackElevations, levelFloorArea, projectFloorArea,
+  polygonArea, polygonPerimeter, polygonMinWidth, polygonCentroid, stackElevations, levelFloorArea, projectFloorArea,
   pointInPolygon, roomAtPoint, _resetIds,
 } from '../core/model.js';
 import { parseLength, formatLength, formatArea, UNIT } from '../core/units.js';
@@ -121,6 +121,22 @@ proj.levels[0].openings.push(createOpening('a', 'window', { id: 'bad', offset: 3
 const vBad = validateProject(proj);
 ok(!vBad.ok && vBad.errors.some(e => e.includes("doesn't fit")), '5i overflow opening flagged by validate');
 proj.levels[0].openings = proj.levels[0].openings.filter(o => o.id !== 'bad');
+
+// degenerate openings would feed a non-watertight box into the CSG boolean — validate must reject
+// them (parity with the phase2 engine-independent reference core). A fitting door is still fine.
+proj.levels[0].openings.push(createOpening('a', 'window', { id: 'degW', offset: 1.0, width: 0 }));
+ok(validateProject(proj).errors.some(e => e.includes('degW') && e.includes('width')), '5i2 zero-width opening flagged');
+proj.levels[0].openings = proj.levels[0].openings.filter(o => o.id !== 'degW');
+proj.levels[0].openings.push(createOpening('a', 'window', { id: 'negW', offset: 1.0, width: -0.5 }));
+ok(validateProject(proj).errors.some(e => e.includes('negW') && e.includes('width')), '5i3 negative-width opening flagged');
+proj.levels[0].openings = proj.levels[0].openings.filter(o => o.id !== 'negW');
+proj.levels[0].openings.push(createOpening('a', 'window', { id: 'degH', offset: 1.0, width: 0.8, height: 0 }));
+ok(validateProject(proj).errors.some(e => e.includes('degH') && e.includes('height')), '5i4 zero-height opening flagged');
+proj.levels[0].openings = proj.levels[0].openings.filter(o => o.id !== 'degH');
+proj.levels[0].openings.push(createOpening('a', 'window', { id: 'nanW', offset: 1.0, width: NaN }));
+ok(validateProject(proj).errors.some(e => e.includes('nanW') && e.includes('width')), '5i5 NaN-width opening flagged');
+proj.levels[0].openings = proj.levels[0].openings.filter(o => o.id !== 'nanW');
+ok(validateProject(proj).ok, '5i6 project valid again once degenerate openings removed');
 
 // removeWall cascades to its openings; undo restores both (lossless)
 const beforeRemove = serialize(proj);
@@ -825,6 +841,24 @@ const tri = [{ x: 0, z: 0 }, { x: 4, z: 0 }, { x: 0, z: 3 }];
 ok(near(polygonArea(tri), 6) && near(polygonPerimeter(tri), 12), '34d right triangle 4x3 = 6 m² area, 12 m perimeter');
 ok(polygonArea([{ x: 0, z: 0 }, { x: 1, z: 1 }]) === 0 && polygonArea(null) === 0, '34e degenerate polygon (< 3 pts / null) = 0 area');
 ok(polygonPerimeter([{ x: 0, z: 0 }, { x: 1, z: 1 }]) === 0, '34f degenerate polygon = 0 perimeter');
+
+// 34f1-f9) polygonMinWidth: the narrowest cross-dimension of a plan polygon (convex-hull width).
+ok(near(polygonMinWidth(unitSq), 1), '34f1 unit square min width = 1 m');
+ok(near(polygonMinWidth(rect), 4), '34f2 4x6 rectangle min width = 4 m (the short side)');
+ok(near(polygonMinWidth(rectCW), 4), '34f3 min width is winding-independent');
+// a 45°-rotated 2 m square: min width is the side length (2), NOT the diagonal (~2.83).
+const diamond = [{ x: 0, z: -Math.SQRT2 }, { x: Math.SQRT2, z: 0 }, { x: 0, z: Math.SQRT2 }, { x: -Math.SQRT2, z: 0 }];
+ok(near(polygonMinWidth(diamond), 2, 1e-6), '34f4 rotated (diamond) 2 m square min width = 2 m (not the diagonal)');
+// a long thin sliver: 0.8 m across regardless of length — the case the area check misses.
+const sliver = [{ x: 0, z: 0 }, { x: 14, z: 0 }, { x: 14, z: 0.8 }, { x: 0, z: 0.8 }];
+ok(near(polygonArea(sliver), 11.2) && near(polygonMinWidth(sliver), 0.8), '34f5 an 11.2 m² sliver is only 0.8 m wide (width, not area, catches it)');
+// concave L-shape: width is measured across the overall extent (hull), never the notch → a
+// 4-unit-legged L reads its full 6 m span as the min width, not a false slit.
+const lshape = [{ x: 0, z: 0 }, { x: 6, z: 0 }, { x: 6, z: 2 }, { x: 2, z: 2 }, { x: 2, z: 6 }, { x: 0, z: 6 }];
+ok(polygonMinWidth(lshape) > 4.9 && polygonMinWidth(lshape) < 6.1, '34f6 a concave L-shape reads its overall extent, not the notch');
+ok(polygonMinWidth([{ x: 0, z: 0 }, { x: 1, z: 1 }]) === 0 && polygonMinWidth(null) === 0, '34f7 degenerate polygon (< 3 pts / null) = 0 width');
+ok(polygonMinWidth([{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }]) === 0, '34f8 a collinear polygon has 0 width (no enclosing band)');
+ok(polygonMinWidth([{ x: 0, z: 0 }, { x: 4, z: 0 }, { x: 4, z: 0 }, { x: 4, z: 3 }, { x: 0, z: 3 }]) === 3, '34f9 duplicate vertices are tolerated (4x3 → 3 m)');
 
 // 34g-m) the room inspector descriptor: a read-only floor-area + perimeter readout.
 const rmProj = createProject({ levels: [createLevel({ id: 'RM', name: 'G', height: 2.7,

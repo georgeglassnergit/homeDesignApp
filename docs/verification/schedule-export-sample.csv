@@ -1,0 +1,30 @@
+Roomclip schedule — Sample Home
+"Approximate quantities from your design model — not a certified take-off, bill of quantities, or construction spec. Confirm every figure before ordering materials or pricing work."
+
+Summary
+Metric,Value,Unit
+Storeys,1,
+Rooms,2,
+Doors,1,
+Windows,2,
+Walls,5,
+Floor area (GFA),32,m²
+Total wall length,21,m
+Gross wall area (1 face),56.7,m²
+Openings area,5.25,m²
+Net wall area,51.45,m²
+
+Rooms
+Level,Room,Floor area (m²),Perimeter (m),Finish
+Ground,"Living, open-plan",20,18,floor
+Ground,Kitchen,12,14,floor
+
+Openings
+Level,Type,Host wall,Width (m),Height (m),Area (m²),Sill (m)
+Ground,door,wall_1,0.9,2.1,1.89,0
+Ground,window,wall_2,1.4,1.2,1.68,0.9
+Ground,window,wall_3,1.4,1.2,1.68,0.9
+
+Walls by level
+Level,Walls,Total length (m),Avg height (m),Gross wall area (m²),Openings area (m²),Net wall area (m²)
+Ground,5,21,2.7,56.7,5.25,51.45
