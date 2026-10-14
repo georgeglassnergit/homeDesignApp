@@ -122,6 +122,22 @@ const vBad = validateProject(proj);
 ok(!vBad.ok && vBad.errors.some(e => e.includes("doesn't fit")), '5i overflow opening flagged by validate');
 proj.levels[0].openings = proj.levels[0].openings.filter(o => o.id !== 'bad');
 
+// degenerate openings would feed a non-watertight box into the CSG boolean — validate must reject
+// them (parity with the phase2 engine-independent reference core). A fitting door is still fine.
+proj.levels[0].openings.push(createOpening('a', 'window', { id: 'degW', offset: 1.0, width: 0 }));
+ok(validateProject(proj).errors.some(e => e.includes('degW') && e.includes('width')), '5i2 zero-width opening flagged');
+proj.levels[0].openings = proj.levels[0].openings.filter(o => o.id !== 'degW');
+proj.levels[0].openings.push(createOpening('a', 'window', { id: 'negW', offset: 1.0, width: -0.5 }));
+ok(validateProject(proj).errors.some(e => e.includes('negW') && e.includes('width')), '5i3 negative-width opening flagged');
+proj.levels[0].openings = proj.levels[0].openings.filter(o => o.id !== 'negW');
+proj.levels[0].openings.push(createOpening('a', 'window', { id: 'degH', offset: 1.0, width: 0.8, height: 0 }));
+ok(validateProject(proj).errors.some(e => e.includes('degH') && e.includes('height')), '5i4 zero-height opening flagged');
+proj.levels[0].openings = proj.levels[0].openings.filter(o => o.id !== 'degH');
+proj.levels[0].openings.push(createOpening('a', 'window', { id: 'nanW', offset: 1.0, width: NaN }));
+ok(validateProject(proj).errors.some(e => e.includes('nanW') && e.includes('width')), '5i5 NaN-width opening flagged');
+proj.levels[0].openings = proj.levels[0].openings.filter(o => o.id !== 'nanW');
+ok(validateProject(proj).ok, '5i6 project valid again once degenerate openings removed');
+
 // removeWall cascades to its openings; undo restores both (lossless)
 const beforeRemove = serialize(proj);
 h.execute(removeWall('L', 'a'));

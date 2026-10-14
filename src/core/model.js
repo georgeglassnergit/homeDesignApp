@@ -386,6 +386,12 @@ export function validateProject(project) {
       if (!wallIds.has(o.wallId)) { errors.push(`opening ${o.id}: unknown wallId ${o.wallId}`); continue; }
       const w = lvl.walls.find(x => x.id === o.wallId);
       const L = wallLength(w);
+      // A degenerate opening (zero/negative/NaN width or height) would carve a non-watertight
+      // box into the wall and break the CSG two-manifold guarantee — reject it before it reaches
+      // the boolean. (The phase2 engine-independent reference core already enforces this; this
+      // brings the shipped core into line.)
+      if (!(o.width > 0)) errors.push(`opening ${o.id}: width must be > 0`);
+      if (!(o.height > 0)) errors.push(`opening ${o.id}: height must be > 0`);
       if (o.offset < 0 || o.offset + o.width > L + 1e-6) errors.push(`opening ${o.id}: doesn't fit on wall ${o.wallId} (offset ${o.offset} + width ${o.width} > ${L.toFixed(2)})`);
       if (o.sill + o.height > w.height + 1e-6) errors.push(`opening ${o.id}: taller than wall`);
     }
