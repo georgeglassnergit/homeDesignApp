@@ -138,6 +138,25 @@ ok(validateProject(proj).errors.some(e => e.includes('nanW') && e.includes('widt
 proj.levels[0].openings = proj.levels[0].openings.filter(o => o.id !== 'nanW');
 ok(validateProject(proj).ok, '5i6 project valid again once degenerate openings removed');
 
+// non-finite geometry (from a corrupt / hand-edited save) must be rejected at the validation
+// boundary — a NaN endpoint slips past the zero-length check (NaN < 1e-4 is false) and a NaN
+// room vertex poisons every derived length / mitre / area / label downstream. Operate on an
+// independent clone so the shared `proj` the later sections rely on is untouched.
+const vfBase = deserialize(serialize(proj));
+const vfWall = deserialize(serialize(vfBase));
+vfWall.levels[0].walls[0].b.x = NaN;
+ok(validateProject(vfWall).errors.some(e => e.includes(vfWall.levels[0].walls[0].id) && e.includes('finite')),
+  '5i7 a wall with a NaN endpoint coordinate is flagged (not mistaken for zero-length)');
+const vfWall2 = deserialize(serialize(vfBase));
+delete vfWall2.levels[0].walls[1].a.z; // missing coordinate -> undefined, not a number
+ok(validateProject(vfWall2).errors.some(e => e.includes(vfWall2.levels[0].walls[1].id) && e.includes('finite')),
+  '5i8 a wall with a missing endpoint coordinate is flagged');
+const vfRoom = deserialize(serialize(vfBase));
+vfRoom.levels[0].rooms.push(createRoom([{ x: 0, z: 0 }, { x: 4, z: 0 }, { x: 4, z: Infinity }], { id: 'badRoom' }));
+ok(validateProject(vfRoom).errors.some(e => e.includes('badRoom') && e.includes('finite')),
+  '5i9 a room with a non-finite (∞) vertex is flagged');
+ok(validateProject(vfBase).ok, '5i10 the untouched clone (all-finite geometry) still validates');
+
 // removeWall cascades to its openings; undo restores both (lossless)
 const beforeRemove = serialize(proj);
 h.execute(removeWall('L', 'a'));
@@ -841,6 +860,13 @@ const tri = [{ x: 0, z: 0 }, { x: 4, z: 0 }, { x: 0, z: 3 }];
 ok(near(polygonArea(tri), 6) && near(polygonPerimeter(tri), 12), '34d right triangle 4x3 = 6 m² area, 12 m perimeter');
 ok(polygonArea([{ x: 0, z: 0 }, { x: 1, z: 1 }]) === 0 && polygonArea(null) === 0, '34e degenerate polygon (< 3 pts / null) = 0 area');
 ok(polygonPerimeter([{ x: 0, z: 0 }, { x: 1, z: 1 }]) === 0, '34f degenerate polygon = 0 perimeter');
+// non-finite vertex: fail safe to 0 rather than propagating NaN into the area label / schedule /
+// SVG (matching polygonMinWidth/polygonCentroid, which already drop or fall back on non-finite).
+const nanPoly = [{ x: 0, z: 0 }, { x: 4, z: 0 }, { x: 4, z: NaN }, { x: 0, z: 3 }];
+ok(polygonArea(nanPoly) === 0 && polygonPerimeter(nanPoly) === 0, '34g a polygon with a NaN vertex = 0 area and 0 perimeter (no NaN leak)');
+const infPoly = [{ x: 0, z: 0 }, { x: Infinity, z: 0 }, { x: 4, z: 3 }];
+ok(polygonArea(infPoly) === 0 && polygonPerimeter(infPoly) === 0, '34h a polygon with an ∞ vertex = 0 area and 0 perimeter');
+ok(polygonArea([{ x: 0, z: 0 }, { z: 2 }, { x: 4, z: 3 }]) === 0, '34i a polygon with a missing coordinate = 0 area (no NaN leak)');
 
 // 34f1-f9) polygonMinWidth: the narrowest cross-dimension of a plan polygon (convex-hull width).
 ok(near(polygonMinWidth(unitSq), 1), '34f1 unit square min width = 1 m');
