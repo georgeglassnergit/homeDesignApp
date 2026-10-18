@@ -217,25 +217,28 @@ export function exportGltf(project, opts = {}) {
     warnings.push(`${project.furniture.length} furniture item(s) not exported (external GLB assets)`);
   }
 
+  // Assemble the document. glTF 2.0's schema requires every top-level collection — and a
+  // scene's `nodes` list — to be NON-EMPTY whenever the property is present (each is
+  // `minItems: 1`). So a project with no exportable massing — a blank project, or one that
+  // holds only external-GLB furniture — must OMIT these arrays entirely rather than emit `[]`:
+  // a present-but-empty array makes the Khronos glTF-Validator (and strict loaders such as
+  // model-viewer and Babylon.js) reject the file. The scene itself stays, carrying only its
+  // name, which is a legal empty scene. (The old code only stripped accessors/bufferViews,
+  // leaving nodes/meshes/materials/buffers and scene.nodes as invalid empty arrays.)
+  const sceneObj = { name: sanitize((project && project.name) || 'home') };
+  if (nodeIndices.length) sceneObj.nodes = nodeIndices;
+
   const doc = {
     asset: { version: '2.0', generator: 'Roomclip glTF export' },
     scene: 0,
-    scenes: [{ name: sanitize((project && project.name) || 'home'), nodes: nodeIndices }],
-    nodes,
-    meshes,
-    materials: gltfMaterials,
-    accessors,
-    bufferViews,
-    buffers: byteLength ? [{ byteLength, uri: bufferUri }] : [],
+    scenes: [sceneObj],
   };
-
-  // A model with no geometry has no buffer, so drop the now-empty buffer-dependent arrays
-  // to keep the document strictly valid (glTF forbids empty accessors/bufferViews arrays only
-  // when present-but-empty is meaningless; an empty scene of nodes is legal).
-  if (!byteLength) {
-    delete doc.accessors;
-    delete doc.bufferViews;
-  }
+  if (nodes.length) doc.nodes = nodes;
+  if (meshes.length) doc.meshes = meshes;
+  if (gltfMaterials.length) doc.materials = gltfMaterials;
+  if (accessors.length) doc.accessors = accessors;
+  if (bufferViews.length) doc.bufferViews = bufferViews;
+  if (byteLength) doc.buffers = [{ byteLength, uri: bufferUri }];
 
   const json = JSON.stringify(doc, null, 2);
   return {

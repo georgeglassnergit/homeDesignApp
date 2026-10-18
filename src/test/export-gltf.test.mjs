@@ -11,7 +11,9 @@
 //   • bufferViews stay 4-byte aligned; buffers[0].byteLength matches the payload
 //   • the portable base64 encoder matches Node's Buffer oracle exactly (incl. padding cases)
 //   • purity: exporting mutates NOTHING, adds NO save field, the save stays byte-identical
-//   • malformed / partial / empty projects never throw; an empty model is a valid minimal doc
+//   • malformed / partial / empty projects never throw; a project with no exportable massing
+//     (blank or furniture-only) is a SCHEMA-VALID minimal doc — top-level collections and
+//     scene.nodes are OMITTED, never emitted present-but-empty (glTF 2.0 minItems:1)
 // Lives in its own file so it composes with in-flight work (the roof/room suites' approach).
 import {
   createProject, createLevel, createWall, createOpening, createRoom, createRoof,
@@ -49,6 +51,23 @@ function readIndices(res, buf, accessorIndex) {
   const out = [];
   for (let i = 0; i < acc.count; i++) out.push(buf.readUInt32LE(base + i * 4));
   return out;
+}
+
+// glTF 2.0 schema lint: every top-level collection — and every scene's `nodes` list — must be
+// NON-EMPTY whenever the property is present (each is `minItems: 1` in the schema). A
+// present-but-empty array (e.g. `"nodes": []`) is a validation error that the Khronos
+// glTF-Validator and strict loaders reject, so a correct exporter OMITS the key instead.
+// Returns the offending paths ([] when the doc is clean). JSON.parse succeeding is NOT the same
+// as schema validity — this is the check that actually proves "valid glTF 2.0".
+const GLTF_COLLECTIONS = ['scenes', 'nodes', 'meshes', 'materials', 'accessors', 'bufferViews',
+  'buffers', 'animations', 'cameras', 'images', 'samplers', 'skins', 'textures'];
+function emptyCollectionPaths(doc) {
+  const bad = [];
+  for (const key of GLTF_COLLECTIONS) if (Array.isArray(doc[key]) && doc[key].length === 0) bad.push(key);
+  if (Array.isArray(doc.scenes)) doc.scenes.forEach((s, i) => {
+    if (s && Array.isArray(s.nodes) && s.nodes.length === 0) bad.push(`scenes[${i}].nodes`);
+  });
+  return bad;
 }
 
 // A representative one-storey home: 4 walls forming a room, a door + window, a gable roof.
@@ -96,6 +115,8 @@ function sampleProject() {
     p.attributes && Number.isInteger(p.attributes.POSITION) &&
     Number.isInteger(p.indices) && Number.isInteger(p.material) && p.mode === 4)),
     'every primitive has POSITION, indices, a material, and TRIANGLES mode');
+  ok(emptyCollectionPaths(g).length === 0,
+    `populated doc is schema-valid — no present-but-empty collections (${emptyCollectionPaths(g).join(', ') || 'none'})`);
 }
 
 // ── 2. Buffer + accessors decode to the real geometry ─────────────────────────
@@ -234,15 +255,39 @@ function sampleProject() {
   const bad = [undefined, null, {}, { levels: null }, { levels: [null, {}] },
     { levels: [{ name: 'x', height: 2.7, walls: [null, { id: 'w', a: { x: 0, z: 0 }, b: { x: 0, z: 0 }, thickness: 0.2, height: 2.4, material: 'wall' }], rooms: [{ id: 'r', points: [] }] }] }];
   let threw = false;
-  for (const b of bad) { try { const r = exportGltf(b); if (typeof r.gltf !== 'string') threw = true; JSON.parse(r.gltf); } catch { threw = true; } }
-  ok(!threw, 'malformed/partial projects never throw and always yield parseable glTF');
+  for (const b of bad) {
+    try {
+      const r = exportGltf(b);
+      if (typeof r.gltf !== 'string') threw = true;
+      const parsed = JSON.parse(r.gltf);
+      if (emptyCollectionPaths(parsed).length) threw = true;  // present-but-empty array ⇒ invalid glTF
+    } catch { threw = true; }
+  }
+  ok(!threw, 'malformed/partial projects never throw and always yield schema-valid glTF (no present-but-empty collections)');
 
-  // an empty project → a valid minimal doc with no buffer
+  // A project with no exportable massing (a blank project, or furniture-only) → a valid minimal
+  // doc. The fix: the empty collections are OMITTED, not emitted as `[]` — glTF 2.0 forbids a
+  // present-but-empty top-level array or scene.nodes (minItems: 1), which the Khronos validator
+  // and strict loaders reject. (The old exporter emitted nodes/meshes/materials/buffers:[] and an
+  // empty scenes[0].nodes:[] — JSON-parseable but NOT schema-valid.)
   const empty = exportGltf(createProject({ name: 'Empty' }));
-  ok(empty.json.buffers.length === 0, 'empty project → no buffer');
-  ok(empty.json.nodes.length === 0 && empty.json.meshes.length === 0, 'empty project → no nodes/meshes');
-  ok(empty.json.asset.version === '2.0' && JSON.parse(empty.gltf), 'empty project is still valid glTF 2.0');
+  ok(empty.json.buffers === undefined, 'empty project → no buffers key at all (not an empty [])');
+  ok(empty.json.nodes === undefined && empty.json.meshes === undefined, 'empty project → nodes/meshes omitted, not empty arrays');
+  ok(empty.json.materials === undefined && empty.json.accessors === undefined && empty.json.bufferViews === undefined,
+    'empty project → materials/accessors/bufferViews omitted, not empty arrays');
+  ok(empty.json.scenes.length === 1 && empty.json.scenes[0].name === 'Empty' && empty.json.scenes[0].nodes === undefined,
+    'empty project → the single named scene carries no empty nodes[] (omitted, a legal empty scene)');
+  ok(emptyCollectionPaths(empty.json).length === 0,
+    `empty project is schema-valid glTF 2.0 — no present-but-empty collections (${emptyCollectionPaths(empty.json).join(', ') || 'none'})`);
+  ok(empty.json.asset.version === '2.0' && empty.json.scene === 0 && JSON.parse(empty.gltf), 'empty project is still valid glTF 2.0 (asset + default scene)');
   ok(empty.counts.byteLength === 0, 'empty project reports zero buffer bytes');
+
+  // The concrete real-world triggers: a furniture-only project and a single blank level both
+  // reach the no-geometry path and must stay schema-valid (not just the createProject() default).
+  const furnitureOnly = { name: 'FurnitureOnly', materials: {}, levels: [{ id: 'L0', name: 'G', height: 2.7, walls: [], rooms: [], openings: [] }], furniture: [{ id: 'f1', src: 'sofa.glb' }] };
+  const fo = exportGltf(furnitureOnly);
+  ok(emptyCollectionPaths(fo.json).length === 0, 'furniture-only project exports schema-valid glTF (no empty collections)');
+  ok(fo.warnings.some(w => /furniture/.test(w)), 'furniture-only project still reports the furniture-not-exported warning');
 }
 
 // ── 11. Multi-level stacking uses the same base elevations as OBJ ─────────────
