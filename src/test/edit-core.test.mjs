@@ -157,6 +157,28 @@ ok(validateProject(vfRoom).errors.some(e => e.includes('badRoom') && e.includes(
   '5i9 a room with a non-finite (∞) vertex is flagged');
 ok(validateProject(vfBase).ok, '5i10 the untouched clone (all-finite geometry) still validates');
 
+// An opening's POSITION (offset along the wall, sill off the floor) must also be finite — a
+// NaN offset slips past the fit check (NaN compares false against every bound) and a NaN /
+// missing sill slips past the sill+height bound, so a corrupt save would carve the CSG cut box
+// at a non-finite coordinate. vfBase carries the fitting door 'door1' on wall 'a'; mutate a
+// fresh clone each time so the shared `proj` and vfBase stay intact.
+const vfOff = deserialize(serialize(vfBase));
+vfOff.levels[0].openings[0].offset = NaN;
+ok(validateProject(vfOff).errors.some(e => e.includes(vfOff.levels[0].openings[0].id) && e.includes('offset') && e.includes('finite')),
+  '5i11 an opening with a NaN offset is flagged (not silently passed by the fit check)');
+const vfOff2 = deserialize(serialize(vfBase));
+vfOff2.levels[0].openings[0].offset = Infinity;
+ok(validateProject(vfOff2).errors.some(e => e.includes(vfOff2.levels[0].openings[0].id) && e.includes('offset') && e.includes('finite')),
+  '5i12 an opening with an ∞ offset is flagged as non-finite (not only as a fit overflow)');
+const vfSill = deserialize(serialize(vfBase));
+vfSill.levels[0].openings[0].sill = NaN;
+ok(validateProject(vfSill).errors.some(e => e.includes(vfSill.levels[0].openings[0].id) && e.includes('sill') && e.includes('finite')),
+  '5i13 an opening with a NaN sill is flagged (not silently passed by the sill+height bound)');
+const vfMissSill = deserialize(serialize(vfBase));
+delete vfMissSill.levels[0].openings[0].sill;
+ok(validateProject(vfMissSill).errors.some(e => e.includes(vfMissSill.levels[0].openings[0].id) && e.includes('sill') && e.includes('finite')),
+  '5i14 an opening with a missing sill is flagged');
+
 // removeWall cascades to its openings; undo restores both (lossless)
 const beforeRemove = serialize(proj);
 h.execute(removeWall('L', 'a'));

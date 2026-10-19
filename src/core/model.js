@@ -406,6 +406,16 @@ export function validateProject(project) {
       // brings the shipped core into line.)
       if (!(o.width > 0)) errors.push(`opening ${o.id}: width must be > 0`);
       if (!(o.height > 0)) errors.push(`opening ${o.id}: height must be > 0`);
+      // The opening's POSITION must also be finite. A NaN/∞ (or missing) `offset` slips past the
+      // fit check below (NaN compares false against every bound; +∞ only happens to trip it as
+      // "doesn't fit"), and a NaN/missing `sill` slips past the sill+height bound (`NaN > wall`
+      // is false) — so a corrupt or hand-edited save would place the CSG cut box at a non-finite
+      // coordinate and carve a non-watertight hole, breaking the same two-manifold guarantee the
+      // width/height guards protect. Reject it at the boundary (finite-coordinate parity with the
+      // wall-endpoint and room-vertex guards above). Every real opening carries a finite offset
+      // and sill, so no valid project is affected — this only adds rejections for corrupt data.
+      if (!Number.isFinite(o.offset)) errors.push(`opening ${o.id}: offset must be a finite number`);
+      if (!Number.isFinite(o.sill)) errors.push(`opening ${o.id}: sill must be a finite number`);
       if (o.offset < 0 || o.offset + o.width > L + 1e-6) errors.push(`opening ${o.id}: doesn't fit on wall ${o.wallId} (offset ${o.offset} + width ${o.width} > ${L.toFixed(2)})`);
       if (o.sill + o.height > w.height + 1e-6) errors.push(`opening ${o.id}: taller than wall`);
     }
