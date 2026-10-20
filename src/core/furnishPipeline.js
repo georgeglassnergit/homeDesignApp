@@ -147,6 +147,16 @@ export function validateImageInput(image, config) {
   if (!/^[A-Za-z0-9+/]+={0,2}$/.test(cleaned)) {
     throw new FurnishError(ERROR_CODES.INVALID_IMAGE, 'image data is not valid base64');
   }
+  // Canonical (padded) base64 is ALWAYS a multiple of 4 chars — which is exactly what a browser
+  // data URL (FileReader / canvas.toDataURL / btoa) emits. A length that is not a multiple of 4
+  // means the payload is truncated or otherwise malformed (e.g. a partial/interrupted read or a
+  // clipboard paste cut short), even when every character is a legal base64 symbol. Reject it
+  // here so the furnish job fails FAST and LOCAL with a clear reason, instead of forwarding a
+  // corrupt payload to the proxy → provider and failing late after a network round-trip. It also
+  // keeps the byteLength estimate below exact (that formula assumes well-formed 4-char groups).
+  if (cleaned.length % 4 !== 0) {
+    throw new FurnishError(ERROR_CODES.INVALID_IMAGE, 'image data is truncated or malformed base64 (length is not a multiple of 4)');
+  }
   if (!acceptedTypes.map((t) => t.toLowerCase()).includes(mimeType)) {
     throw new FurnishError(ERROR_CODES.INVALID_IMAGE, `unsupported image type ${mimeType} (accepted: ${acceptedTypes.join(', ')})`, { mimeType });
   }

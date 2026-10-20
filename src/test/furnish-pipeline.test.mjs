@@ -84,6 +84,12 @@ async function main() {
     ok(threw(() => validateImageInput('not-a-data-url'), ERROR_CODES.INVALID_IMAGE), '2e bare string that is not a data URL → invalid-image');
     ok(threw(() => validateImageInput('data:image/png;base64,'), ERROR_CODES.INVALID_IMAGE), '2f empty data → invalid-image');
     ok(threw(() => validateImageInput('data:image/png;base64,****'), ERROR_CODES.INVALID_IMAGE), '2g non-base64 payload → invalid-image');
+    // truncated/malformed base64: all legal chars but length not a multiple of 4 (a partial or
+    // interrupted upload). Must fail fast & local, not get forwarded to the proxy to fail late.
+    ok(threw(() => validateImageInput('data:image/png;base64,ABCDE'), ERROR_CODES.INVALID_IMAGE), '2g2 valid-char but length%4!=0 (truncated) → invalid-image');
+    ok(threw(() => validateImageInput(`data:image/png;base64,${PNG_1x1.slice(0, -1)}`), ERROR_CODES.INVALID_IMAGE), '2g3 one char dropped from a real png → invalid-image');
+    // positive control: a real (well-formed, %4) payload still validates — the guard only rejects malformed lengths.
+    ok(validateImageInput(PNG_URL).base64 === PNG_1x1, '2g4 well-formed base64 (length%4==0) still accepted');
     ok(threw(() => validateImageInput(`data:image/gif;base64,${PNG_1x1}`), ERROR_CODES.INVALID_IMAGE), '2h unsupported type (gif) → invalid-image');
     ok(threw(() => validateImageInput(null), ERROR_CODES.INVALID_IMAGE), '2i null → invalid-image');
     ok(threw(() => validateImageInput({}), ERROR_CODES.INVALID_IMAGE), '2j object without image data → invalid-image');
