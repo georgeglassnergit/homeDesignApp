@@ -176,11 +176,20 @@ export function wallLength(wall) {
   return Math.hypot(wall.b.x - wall.a.x, wall.b.z - wall.a.z);
 }
 
+// A plan point is usable only when both coordinates are finite numbers. A NaN/∞ (or missing)
+// coordinate — from a corrupt or hand-edited save — has no well-defined area, length or hit
+// test, so the geometry helpers below fail safe to 0/false rather than propagating NaN into the
+// room-area label, the schedule take-off, and the SVG/DXF plan. (polygonMinWidth/polygonCentroid
+// already drop or fall back on non-finite points; this keeps polygonArea/polygonPerimeter — the
+// most fundamental of the family — to the same "never NaN" contract they already promise.)
+function finiteXZ(p) { return !!p && Number.isFinite(p.x) && Number.isFinite(p.z); }
+
 // Absolute floor area (m²) of a plan polygon of {x,z} points via the shoelace formula.
 // Winding-independent (CW or CCW both give a positive area) and returns 0 for a degenerate
-// polygon (< 3 points), so a room readout never shows a negative or NaN area. Pure geometry.
+// polygon (< 3 points, or any non-finite coordinate), so a room readout never shows a
+// negative or NaN area. Pure geometry.
 export function polygonArea(points) {
-  if (!Array.isArray(points) || points.length < 3) return 0;
+  if (!Array.isArray(points) || points.length < 3 || !points.every(finiteXZ)) return 0;
   let sum = 0;
   for (let i = 0, n = points.length; i < n; i++) {
     const p = points[i], q = points[(i + 1) % n];
@@ -190,9 +199,10 @@ export function polygonArea(points) {
 }
 
 // Perimeter (m) of a closed plan polygon of {x,z} points (the last point joins back to the
-// first). 0 for a degenerate polygon (< 3 points). Pure geometry — companion to polygonArea.
+// first). 0 for a degenerate polygon (< 3 points, or any non-finite coordinate). Pure
+// geometry — companion to polygonArea.
 export function polygonPerimeter(points) {
-  if (!Array.isArray(points) || points.length < 3) return 0;
+  if (!Array.isArray(points) || points.length < 3 || !points.every(finiteXZ)) return 0;
   let per = 0;
   for (let i = 0, n = points.length; i < n; i++) {
     const p = points[i], q = points[(i + 1) % n];
@@ -380,7 +390,11 @@ export function validateProject(project) {
     for (const w of lvl.walls) {
       if (!(w.thickness > 0)) errors.push(`wall ${w.id}: thickness must be > 0`);
       if (!(w.height > 0)) errors.push(`wall ${w.id}: height must be > 0`);
-      if (wallLength(w) < 1e-4) errors.push(`wall ${w.id}: zero length`);
+      // A non-finite endpoint (NaN/∞/missing, e.g. from a corrupt save) would slip past the
+      // zero-length check — wallLength is then NaN and `NaN < 1e-4` is false — and go on to
+      // poison every derived length, join mitre and 3D vertex. Reject it at the boundary.
+      if (!finiteXZ(w.a) || !finiteXZ(w.b)) errors.push(`wall ${w.id}: endpoint coordinates must be finite numbers`);
+      else if (wallLength(w) < 1e-4) errors.push(`wall ${w.id}: zero length`);
     }
     for (const o of lvl.openings) {
       if (!wallIds.has(o.wallId)) { errors.push(`opening ${o.id}: unknown wallId ${o.wallId}`); continue; }
@@ -392,11 +406,25 @@ export function validateProject(project) {
       // brings the shipped core into line.)
       if (!(o.width > 0)) errors.push(`opening ${o.id}: width must be > 0`);
       if (!(o.height > 0)) errors.push(`opening ${o.id}: height must be > 0`);
+      // The opening's POSITION must also be finite. A NaN/∞ (or missing) `offset` slips past the
+      // fit check below (NaN compares false against every bound; +∞ only happens to trip it as
+      // "doesn't fit"), and a NaN/missing `sill` slips past the sill+height bound (`NaN > wall`
+      // is false) — so a corrupt or hand-edited save would place the CSG cut box at a non-finite
+      // coordinate and carve a non-watertight hole, breaking the same two-manifold guarantee the
+      // width/height guards protect. Reject it at the boundary (finite-coordinate parity with the
+      // wall-endpoint and room-vertex guards above). Every real opening carries a finite offset
+      // and sill, so no valid project is affected — this only adds rejections for corrupt data.
+      if (!Number.isFinite(o.offset)) errors.push(`opening ${o.id}: offset must be a finite number`);
+      if (!Number.isFinite(o.sill)) errors.push(`opening ${o.id}: sill must be a finite number`);
       if (o.offset < 0 || o.offset + o.width > L + 1e-6) errors.push(`opening ${o.id}: doesn't fit on wall ${o.wallId} (offset ${o.offset} + width ${o.width} > ${L.toFixed(2)})`);
       if (o.sill + o.height > w.height + 1e-6) errors.push(`opening ${o.id}: taller than wall`);
     }
     for (const r of lvl.rooms) {
       if (!Array.isArray(r.points) || r.points.length < 3) errors.push(`room ${r.id}: needs >= 3 points`);
+      // A non-finite room vertex makes the area/centroid/label readouts fail safe to 0, but a
+      // valid project should never carry one — reject it so a corrupt save fails loudly at load
+      // instead of silently drawing a 0 m² room and a NaN-placed label.
+      else if (!r.points.every(finiteXZ)) errors.push(`room ${r.id}: point coordinates must be finite numbers`);
     }
     if (lvl.roof) {
       if (!ROOF_TYPES.includes(lvl.roof.type)) errors.push(`level ${lvl.id}: unknown roof type ${lvl.roof.type}`);
