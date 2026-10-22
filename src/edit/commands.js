@@ -129,6 +129,51 @@ export function addRoom(levelId, room) {
   };
 }
 
+// Add a furniture object to the project (the Phase-4 "furnish from a photo" commit: the
+// image→3D pipeline produces a model furniture record via toFurniture/createFurniture, and
+// THIS is the undoable step that puts it in the project). Furniture lives in the top-level
+// `project.furniture[]` array (each record carries its own `levelId`), so — unlike walls/
+// openings/rooms — there is no level container to look up. `furniture` must already be a
+// model furniture record (from createFurniture, with id + src). It touches only fields
+// createFurniture already writes and serialize already round-trips, so it adds NO new save
+// field and can never break the Phase 1 lossless contract. Undo removes exactly the inserted
+// record (matched by id), restoring the prior save byte-for-byte.
+export function addFurniture(furniture) {
+  return {
+    name: 'Add furniture',
+    do(project) {
+      if (!furniture || !furniture.id) throw new Error('addFurniture: furniture needs an id');
+      if (!Array.isArray(project.furniture)) project.furniture = [];
+      project.furniture.push(furniture);
+    },
+    undo(project) {
+      if (Array.isArray(project.furniture)) {
+        project.furniture = project.furniture.filter(f => f.id !== furniture.id);
+      }
+    },
+  };
+}
+
+// Remove a furniture object by id. The removed record is captured WITH its original array
+// index so undo re-inserts it in place, keeping the save file byte-identical across a
+// remove→undo round-trip (same lossless pattern as removeWall/removeOpening).
+export function removeFurniture(furnitureId) {
+  let removed = null, idx = -1;
+  return {
+    name: 'Remove furniture',
+    do(project) {
+      if (!Array.isArray(project.furniture)) throw new Error('removeFurniture: project has no furniture');
+      idx = project.furniture.findIndex(f => f.id === furnitureId);
+      if (idx < 0) throw new Error(`removeFurniture: missing furniture ${furnitureId}`);
+      removed = project.furniture[idx];
+      project.furniture.splice(idx, 1);
+    },
+    undo(project) {
+      if (Array.isArray(project.furniture) && removed) project.furniture.splice(idx, 0, removed);
+    },
+  };
+}
+
 // Resize a wall by exact dimensions (the Pro-seam "exact-dimensions" edit). `changes` may
 // carry any of { length, thickness, height } in METERS. `length` moves endpoint b along the
 // existing a→b direction, keeping a fixed (a degenerate zero-length wall has no direction, so
