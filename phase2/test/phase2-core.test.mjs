@@ -103,5 +103,51 @@ for (const s of STARTERS) {
   ok(validateProject(built).ok, `8 starter "${s.id}" validates`);
 }
 
+// 9) Finiteness guards — parity with the shipped src/core/model.js (closes the
+//    silent-drift holes where NaN/∞/missing coords slip past the fit/length checks
+//    and carve a non-watertight CSG hole). Each case mutates a FRESH clone so the
+//    shared fixtures stay intact; errors only ADD for already-corrupt data.
+const freshRoom = () => {
+  _resetSeq(9000);
+  const p = createProject({ name: 'Fin', levels: [createLevel({ id: 'L', roof: {} })] });
+  const hh = new History(p, { limit: 50 });
+  hh.execute(addWall('L', makeWall({x:0,z:0},{x:4,z:0},{id:'a'})));
+  hh.execute(addWall('L', makeWall({x:4,z:0},{x:4,z:4},{id:'b'})));
+  hh.execute(addWall('L', makeWall({x:4,z:4},{x:0,z:4},{id:'c'})));
+  hh.execute(addWall('L', makeWall({x:0,z:4},{x:0,z:0},{id:'d'})));
+  hh.execute(addOpening('L', makeOpening('a', 'door', 1.0, {id:'door1'})));
+  return p;
+};
+// 9a positive control: the fresh fixture is valid before any corruption
+ok(validateProject(freshRoom()).ok, '9a fresh finiteness fixture validates');
+
+// wall endpoints
+let fp = freshRoom(); fp.levels[0].walls[0].b.x = NaN;
+ok(validateProject(fp).errors.some(e => e.includes('endpoint coordinates must be finite')), '9b NaN wall endpoint rejected');
+fp = freshRoom(); fp.levels[0].walls[1].a.z = Infinity;
+ok(validateProject(fp).errors.some(e => e.includes('endpoint coordinates must be finite')), '9c ∞ wall endpoint rejected');
+fp = freshRoom(); delete fp.levels[0].walls[2].b;
+ok(validateProject(fp).errors.some(e => e.includes('endpoint coordinates must be finite')), '9d missing wall endpoint rejected');
+
+// opening offset / sill
+fp = freshRoom(); fp.levels[0].openings[0].offset = NaN;
+ok(validateProject(fp).errors.some(e => e.includes('offset must be finite')), '9e NaN opening offset rejected (slips the fit check)');
+fp = freshRoom(); fp.levels[0].openings[0].sill = NaN;
+ok(validateProject(fp).errors.some(e => e.includes('sill must be finite')), '9f NaN opening sill rejected (slips the sill+height check)');
+fp = freshRoom(); fp.levels[0].openings[0].sill = Infinity;
+ok(validateProject(fp).errors.some(e => e.includes('sill must be finite')), '9g ∞ opening sill rejected');
+// a MISSING sill still defaults to 0 (finite) → valid, so it is NOT flagged for finiteness
+fp = freshRoom(); delete fp.levels[0].openings[0].sill;
+ok(!validateProject(fp).errors.some(e => e.includes('sill must be finite')), '9h missing sill is valid (defaults to 0), not flagged');
+
+// room vertices
+fp = freshRoom();
+fp.levels[0].rooms.push({ id: 'r1', points: [{x:0,z:0},{x:4,z:0},{x:NaN,z:4}] });
+ok(validateProject(fp).errors.some(e => e.includes('point coordinates must be finite')), '9i NaN room vertex rejected');
+// positive control: a room with all-finite vertices is NOT flagged
+fp = freshRoom();
+fp.levels[0].rooms.push({ id: 'r2', points: [{x:0,z:0},{x:4,z:0},{x:4,z:4}] });
+ok(!validateProject(fp).errors.some(e => e.includes('point coordinates must be finite')), '9j all-finite room vertices accepted');
+
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'} — ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
