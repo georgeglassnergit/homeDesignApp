@@ -34,6 +34,9 @@ export function wallLength(w) {
   const dx = w.b.x - w.a.x, dz = w.b.z - w.a.z;
   return Math.hypot(dx, dz);
 }
+// A point with finite x/z. Used by validateProject to reject NaN/∞/missing
+// coordinates (from a corrupt or hand-edited save) before they poison geometry.
+function finiteXZ(p) { return !!p && Number.isFinite(p.x) && Number.isFinite(p.z); }
 
 // --- constructors ---
 export function createLevel(opts = {}) {
@@ -94,7 +97,11 @@ export function validateProject(project) {
     const wallById = new Map();
     for (const w of level.walls || []) {
       wallById.set(w.id, w);
-      if (wallLength(w) <= 1e-6) errors.push(`wall ${w.id}: zero-length`);
+      // A non-finite endpoint (NaN/∞/missing) slips past the zero-length check —
+      // wallLength is then NaN and `NaN <= 1e-6` is false — and goes on to poison
+      // every derived length and the CSG cut geometry. Reject it at the boundary.
+      if (!finiteXZ(w.a) || !finiteXZ(w.b)) errors.push(`wall ${w.id}: endpoint coordinates must be finite`);
+      else if (wallLength(w) <= 1e-6) errors.push(`wall ${w.id}: zero-length`);
       if (!(w.thickness > 0)) errors.push(`wall ${w.id}: non-positive thickness`);
       if (!(w.height > 0)) errors.push(`wall ${w.id}: non-positive height`);
     }
@@ -103,14 +110,23 @@ export function validateProject(project) {
       if (!w) { errors.push(`opening ${o.id}: references missing wall ${o.wallId}`); continue; }
       if (!(o.width > 0)) errors.push(`opening ${o.id}: non-positive width`);
       if (!(o.height > 0)) errors.push(`opening ${o.id}: non-positive height`);
+      // The opening's POSITION must be finite. A NaN/∞/missing `offset` slips past the
+      // fit check (NaN compares false against every bound) and a NaN/∞ `sill` slips past
+      // the sill+height bound — either would place the CSG cut box at a non-finite
+      // coordinate and carve a non-watertight hole, breaking the two-manifold guarantee.
+      // (A missing sill still defaults to 0, which is finite and valid.)
+      if (!Number.isFinite(o.offset)) errors.push(`opening ${o.id}: offset must be finite`);
+      if (!Number.isFinite(o.sill ?? 0)) errors.push(`opening ${o.id}: sill must be finite`);
       const len = wallLength(w), half = o.width / 2;
       if (o.offset - half < -1e-9 || o.offset + half > len + 1e-9)
         errors.push(`opening ${o.id}: does not fit within wall ${w.id} (len ${len.toFixed(3)}m)`);
       if ((o.sill ?? 0) + o.height > w.height + 1e-9)
         errors.push(`opening ${o.id}: sill+height exceeds wall height`);
     }
-    for (const r of level.rooms || [])
+    for (const r of level.rooms || []) {
       if (!Array.isArray(r.points) || r.points.length < 3) errors.push(`room ${r.id}: needs >= 3 points`);
+      else if (!r.points.every(finiteXZ)) errors.push(`room ${r.id}: point coordinates must be finite`);
+    }
   }
   return { ok: errors.length === 0, errors };
 }
