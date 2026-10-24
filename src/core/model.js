@@ -360,6 +360,11 @@ export function findOpening(level, openingId) {
 export function findRoom(level, roomId) {
   return level ? level.rooms.find(r => r.id === roomId) || null : null;
 }
+// Furniture lives in the top-level `project.furniture[]` array (not inside a level), so its
+// finder takes the project directly — companion to the level-scoped finders above.
+export function findFurniture(project, furnitureId) {
+  return Array.isArray(project.furniture) ? project.furniture.find(f => f.id === furnitureId) || null : null;
+}
 
 // The room on a storey whose floor polygon contains the plan point {x,z}, or null if the
 // click landed outside every room. When rooms nest or overlap, the smallest-area containing
@@ -436,6 +441,29 @@ export function validateProject(project) {
         const v = lvl.roof[k];
         if (v != null && !(Number.isFinite(v) && v >= 0)) errors.push(`level ${lvl.id}: roof ${k} must be a non-negative number`);
       }
+    }
+  }
+  // Furniture (the Phase-4 image→3D "furnish" output) was never checked here — a corrupt or
+  // hand-edited furniture record would load as "valid" and then fail LATE in the view layer:
+  // an empty/non-string `src` makes the async GLB load fail at runtime; a non-finite position/
+  // scale/rotation places the object at a NaN coordinate (and `scale.setScalar(NaN)` yields an
+  // invisible/degenerate mesh); and a `levelId` pointing at a missing level silently falls back
+  // to elevation 0 in the builder, so the object floats or sinks with no error. Reject these at
+  // the boundary (same finite-coordinate / referential-integrity family as the wall-endpoint,
+  // room-vertex and opening-position guards). A null `levelId` is valid — it means "not tied to
+  // a storey" (placed at base elevation) — so only a NON-null, unknown id is an error. Every
+  // record createFurniture emits (and every real furnish output) passes, so no valid project is
+  // affected; this only adds rejections for already-corrupt data.
+  if (project.furniture != null && !Array.isArray(project.furniture)) {
+    errors.push('furniture must be an array');
+  } else if (Array.isArray(project.furniture)) {
+    const levelIds = new Set((project.levels || []).map(l => l.id));
+    for (const f of project.furniture) {
+      if (typeof f.src !== 'string' || f.src === '') errors.push(`furniture ${f.id}: src must be a non-empty string`);
+      if (!finiteXZ(f.position)) errors.push(`furniture ${f.id}: position coordinates must be finite numbers`);
+      if (!Number.isFinite(f.scale)) errors.push(`furniture ${f.id}: scale must be a finite number`);
+      if (!Number.isFinite(f.rotationY)) errors.push(`furniture ${f.id}: rotationY must be a finite number`);
+      if (f.levelId != null && !levelIds.has(f.levelId)) errors.push(`furniture ${f.id}: unknown levelId ${f.levelId}`);
     }
   }
   return { ok: errors.length === 0, errors };
