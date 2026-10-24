@@ -304,6 +304,85 @@ async function main() {
     ok(r.src === 'g.glb', '12c invalid config values fall back to defaults (no crash)');
   }
 
+  // ---- 13) runFurnishJob — transient-poll retry (a blip must not kill a long job) ----------
+  {
+    // 13a a transient poll failure (HTTP 503) is retried, then the job completes. The two
+    // failed polls are NOT counted toward `polls` (only successful status reads are).
+    const t13a = fakeTransport([
+      okRes({ jobId: 'j' }),                                           // submit
+      httpError(503), httpError(503),                                  // two transient blips on the 1st poll
+      okRes({ status: 'IN_PROGRESS', progress: 40 }),                  // poll 1 (after retries)
+      okRes({ status: 'SUCCEEDED', glbUrl: 'https://cdn/ok.glb' }),    // poll 2
+    ]);
+    const r13a = await runFurnishJob(PNG_URL, { transport: t13a, sleep: instantSleep });
+    ok(r13a.src === 'https://cdn/ok.glb', '13a transient 503 on a poll is retried → job still succeeds');
+    ok(r13a.polls === 2, `13b retries are not counted as polls (polls=${r13a.polls}, expected 2)`);
+    ok(t13a.seen.length === 5, `13c all 5 transport calls made incl. the 2 retried (seen=${t13a.seen.length})`);
+
+    // 13d a thrown transport call on a poll (dropped connection) is likewise retried.
+    let throwsLeft = 2;
+    const t13d = fakeTransport([
+      okRes({ jobId: 'j' }),
+      (req) => { if (throwsLeft-- > 0) throw new Error('ECONNRESET'); return { ok: true, status: 200, json: async () => ({ status: 'SUCCEEDED', glbUrl: 'g.glb' }) }; },
+      (req) => { if (throwsLeft-- > 0) throw new Error('ECONNRESET'); return { ok: true, status: 200, json: async () => ({ status: 'SUCCEEDED', glbUrl: 'g.glb' }) }; },
+      okRes({ status: 'SUCCEEDED', glbUrl: 'g.glb' }),
+    ]);
+    const r13d = await runFurnishJob(PNG_URL, { transport: t13d, sleep: instantSleep });
+    ok(r13d.src === 'g.glb' && r13d.polls === 1, '13d thrown transport call on a poll is retried → succeeds on the 1st real poll');
+
+    // 13e a PERMANENT poll failure (HTTP 404) is NOT retried — it fails fast after one attempt.
+    const t13e = fakeTransport([okRes({ jobId: 'j' }), httpError(404)]);
+    await expectReject(runFurnishJob(PNG_URL, { transport: t13e, sleep: instantSleep }),
+      ERROR_CODES.BAD_RESPONSE, '13e permanent HTTP 404 on a poll → bad-response');
+    ok(t13e.seen.length === 2, `13f 404 made exactly one status call, no retry (seen=${t13e.seen.length})`);
+
+    // 13g a non-JSON poll body is permanent too (preserves 7g) — one attempt, no retry.
+    const t13g = fakeTransport([okRes({ jobId: 'j' }), jsonThrows(), okRes({ status: 'SUCCEEDED', glbUrl: 'g.glb' })]);
+    await expectReject(runFurnishJob(PNG_URL, { transport: t13g, sleep: instantSleep }),
+      ERROR_CODES.BAD_RESPONSE, '13g non-JSON poll body → bad-response (not retried)');
+    ok(t13g.seen.length === 2, `13h non-JSON body not retried (seen=${t13g.seen.length})`);
+
+    // 13i retries are BOUNDED: with maxPollRetries=2, a persistently-transient poll gives up after
+    // maxPollRetries+1 attempts, reporting BAD_RESPONSE tagged transient with the attempt count.
+    const t13i = fakeTransport([okRes({ jobId: 'j' }), httpError(500), httpError(500), httpError(500), httpError(500)]);
+    let code13i = null, details13i = null;
+    try {
+      await runFurnishJob(PNG_URL, { transport: t13i, sleep: instantSleep, config: { maxPollRetries: 2 } });
+      ok(false, '13i persistently-transient poll should give up');
+    } catch (e) {
+      code13i = e && e.code; details13i = e && e.details;
+    }
+    ok(code13i === ERROR_CODES.BAD_RESPONSE, `13i retries exhausted → bad-response (got ${code13i})`);
+    ok(details13i && details13i.transient === true && details13i.attempts === 3, `13j exhausted error tagged transient with attempts=3 (got ${details13i && details13i.attempts})`);
+
+    // 13k maxPollRetries:0 disables retry entirely — a single transient blip fails immediately.
+    const t13k = fakeTransport([okRes({ jobId: 'j' }), httpError(503)]);
+    await expectReject(runFurnishJob(PNG_URL, { transport: t13k, sleep: instantSleep, config: { maxPollRetries: 0 } }),
+      ERROR_CODES.BAD_RESPONSE, '13k maxPollRetries:0 → no retry, fails on first transient blip');
+    ok(t13k.seen.length === 2, `13l retry disabled made exactly one status call (seen=${t13k.seen.length})`);
+
+    // 13m abort DURING a retry backoff is honored (the signal flips on a transient poll response).
+    const sig13m = { aborted: false };
+    const t13m = fakeTransport([
+      okRes({ jobId: 'j' }),
+      (req) => { sig13m.aborted = true; return { ok: false, status: 503, json: async () => ({}) }; },
+      okRes({ status: 'SUCCEEDED', glbUrl: 'g.glb' }),
+    ]);
+    await expectReject(runFurnishJob(PNG_URL, { transport: t13m, sleep: instantSleep, signal: sig13m }),
+      ERROR_CODES.ABORTED, '13m abort during retry backoff → aborted');
+
+    // 13n transient retries respect the overall TIMEOUT: a backoff that would push past the time
+    // budget ends the job with TIMEOUT rather than waiting (fake advancing clock, as in §8).
+    let t = 0;
+    const now = () => t;
+    const sleep = (ms) => { t += ms; return Promise.resolve(); };
+    const t13n = fakeTransport([okRes({ jobId: 'j' }), ...Array(10).fill(httpError(503))]);
+    await expectReject(runFurnishJob(PNG_URL, {
+      transport: t13n, sleep, now,
+      config: { timeoutMs: 3000, retryBackoffMs: 5000, pollIntervalMs: 1000 },
+    }), ERROR_CODES.TIMEOUT, '13n a backoff that would exceed the time budget → timeout (never waits past it)');
+  }
+
   // ---- report ------------------------------------------------------------------------------
   console.log(`\nfurnish-pipeline: ${pass} passed, ${fail} failed`);
   if (fail) { console.log('FAILED:'); for (const f of fails) console.log('  · ' + f); process.exit(1); }

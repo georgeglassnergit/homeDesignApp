@@ -71,11 +71,22 @@ export const FURNISH_DEFAULTS = Object.freeze({
   timeoutMs: 180000,              // give up after 3 min (a generation can be slow)
   maxImageBytes: 8 * 1024 * 1024, // reject oversized uploads before they hit the network
   acceptedTypes: Object.freeze(['image/png', 'image/jpeg', 'image/webp']),
+  // Transient-failure tolerance on an INDIVIDUAL status poll. A 3-minute generation polls ~90
+  // times; without this, one flaky poll (a dropped connection, HTTP 429, or a proxy 5xx) would
+  // throw away the whole in-flight job. These bound how hard a single poll retries before giving
+  // up, with exponential backoff between attempts. Permanent failures (HTTP 4xx, a non-JSON
+  // body) are never retried — they would only re-fail.
+  maxPollRetries: 4,              // transient failures tolerated PER status poll (0 disables retry)
+  retryBackoffMs: 1000,           // base backoff; doubles each retry (1s, 2s, 4s, 8s), capped below
+  maxRetryBackoffMs: 15000,       // cap on any single backoff wait
 });
 
 function resolveConfig(config) {
   const c = config || {};
   const n = (v, d) => (Number.isFinite(v) && v > 0 ? v : d);
+  // Retries may legitimately be 0 (disable), so this clamp accepts non-negative integers rather
+  // than requiring strictly-positive like `n` above.
+  const nonNegInt = (v, d) => (Number.isInteger(v) && v >= 0 ? v : d);
   const endpoint = typeof c.endpoint === 'string' && c.endpoint.trim() ? c.endpoint.trim() : FURNISH_DEFAULTS.endpoint;
   const pollIntervalMs = n(c.pollIntervalMs, FURNISH_DEFAULTS.pollIntervalMs);
   const timeoutMs = n(c.timeoutMs, FURNISH_DEFAULTS.timeoutMs);
@@ -89,6 +100,9 @@ function resolveConfig(config) {
     // injected clock being monotonic (a frozen/non-advancing `now` would otherwise let a
     // perpetual-PENDING proxy spin forever). Defaults just above the time-based budget.
     maxPolls: n(c.maxPolls, Math.ceil(timeoutMs / pollIntervalMs) + 10),
+    maxPollRetries: nonNegInt(c.maxPollRetries, FURNISH_DEFAULTS.maxPollRetries),
+    retryBackoffMs: n(c.retryBackoffMs, FURNISH_DEFAULTS.retryBackoffMs),
+    maxRetryBackoffMs: n(c.maxRetryBackoffMs, FURNISH_DEFAULTS.maxRetryBackoffMs),
   };
 }
 
@@ -256,8 +270,20 @@ export function parseStatusResponse(json) {
 
 // ---- transport helpers -----------------------------------------------------
 
+// Classify an HTTP status as a transient failure worth retrying. A 429 (rate limited) or any
+// 5xx (server/proxy/gateway) is a retry candidate; a missing status (a null/odd transport
+// result) is treated as transient too, since it looks like a network-level anomaly rather than
+// a deliberate rejection. Everything else — notably 4xx — is permanent (retrying just re-fails).
+function isTransientStatus(status) {
+  if (!Number.isFinite(status)) return true;
+  if (status === 429) return true;
+  return status >= 500 && status <= 599;
+}
+
 // A transport is a fetch-like `(request) => Promise<{ ok, status, json() }>`. We require it to
 // be injected (never reach for a global `fetch`) so the module is pure and CI-deterministic.
+// Failures are tagged `.transient` so a caller can decide whether retrying is worthwhile (see
+// `sendStatusWithRetry`); a thrown transport call and a 429/5xx are transient, a 4xx is not.
 async function send(transport, request, codeOnThrow) {
   if (typeof transport !== 'function') {
     throw new FurnishError(ERROR_CODES.NO_TRANSPORT, 'a transport function must be provided (fetch is injected, never global)');
@@ -266,18 +292,58 @@ async function send(transport, request, codeOnThrow) {
   try {
     res = await transport(request);
   } catch (e) {
-    throw new FurnishError(codeOnThrow, `transport error: ${e && e.message ? e.message : e}`, { cause: String(e) });
+    const err = new FurnishError(codeOnThrow, `transport error: ${e && e.message ? e.message : e}`, { cause: String(e) });
+    err.transient = true;   // a thrown transport call is a network-level blip → safe to retry
+    throw err;
   }
   if (!res || res.ok === false) {
-    throw new FurnishError(codeOnThrow, `request failed${res && res.status ? ` (HTTP ${res.status})` : ''}`, { status: res && res.status });
+    const status = res && res.status;
+    const err = new FurnishError(codeOnThrow, `request failed${status ? ` (HTTP ${status})` : ''}`, { status });
+    err.transient = isTransientStatus(status);   // 429/5xx/no-status → retry; 4xx → permanent
+    throw err;
   }
   let body;
   try {
     body = typeof res.json === 'function' ? await res.json() : res.body;
   } catch (e) {
+    // A 200 whose body does not parse as JSON is a contract violation, not a transient network
+    // blip — retrying would just re-fail. Fail fast with BAD_RESPONSE (and leave it untagged, so
+    // it is never retried). Preserves the existing "non-JSON status body → bad-response" behavior.
     throw new FurnishError(ERROR_CODES.BAD_RESPONSE, `response was not JSON: ${e && e.message ? e.message : e}`);
   }
   return body;
+}
+
+// Poll the job status once, retrying ONLY transient failures (a thrown transport call, HTTP 429,
+// or HTTP 5xx) with exponential backoff. This is what keeps a single network blip from killing a
+// multi-minute generation. A permanent failure (HTTP 4xx, a non-JSON body) is re-thrown at once.
+// Abort and the overall time budget are honored between attempts, so the loop always terminates:
+// a backoff that would push past `timeoutMs` ends the job with TIMEOUT instead of waiting.
+async function sendStatusWithRetry(transport, request, cfg, ctx) {
+  const { sleep, now, signal, started } = ctx;
+  let attempt = 0;   // number of retries already performed
+  for (;;) {
+    checkAborted(signal);
+    try {
+      return await send(transport, request, ERROR_CODES.BAD_RESPONSE);
+    } catch (e) {
+      const transient = e instanceof FurnishError && e.transient === true;
+      if (!transient || attempt >= cfg.maxPollRetries) {
+        if (transient && e instanceof FurnishError) {
+          e.details = { ...(e.details || null), transient: true, attempts: attempt + 1 };
+        }
+        throw e;   // permanent, or retries exhausted
+      }
+      attempt++;
+      // Exponential backoff (base × 2^(attempt-1)), capped. Never wait past the time budget.
+      const backoff = Math.min(cfg.retryBackoffMs * 2 ** (attempt - 1), cfg.maxRetryBackoffMs);
+      if (now() - started + backoff > cfg.timeoutMs) {
+        throw new FurnishError(ERROR_CODES.TIMEOUT, `job did not finish within ${cfg.timeoutMs}ms (transient poll failures)`, { attempts: attempt });
+      }
+      checkAborted(signal);
+      await sleep(backoff);
+    }
+  }
 }
 
 const defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -295,9 +361,12 @@ function checkAborted(signal) {
 //   opts.now        (optional)  `() => epochMs`    — tests pass a fake clock
 //   opts.onProgress (optional)  `(snapshot) => void` — per-poll progress callback
 //   opts.signal     (optional)  `{ aborted }`      — cancellation
-//   opts.config     (optional)  endpoint/intervals/limits (see FURNISH_DEFAULTS)
+//   opts.config     (optional)  endpoint/intervals/limits/retries (see FURNISH_DEFAULTS)
 // Resolves to `{ jobId, name, src, thumbnailUrl, polls }` on success; throws FurnishError
 // (code in ERROR_CODES) on any failure. `src` is the GLB url ready for the furniture model.
+// The SUBMIT call is single-shot (a submit failure is immediate and the user simply re-triggers);
+// each STATUS poll tolerates transient failures via `sendStatusWithRetry`, since a long job is
+// exposed to many polls and one blip must not discard an in-flight generation.
 export async function runFurnishJob(image, opts = {}) {
   const { transport, onProgress, signal } = opts;
   const sleep = typeof opts.sleep === 'function' ? opts.sleep : defaultSleep;
@@ -317,7 +386,7 @@ export async function runFurnishJob(image, opts = {}) {
   for (;;) {
     checkAborted(signal);
     const statusReq = buildStatusRequest(jobId, cfg);
-    const snap = parseStatusResponse(await send(transport, statusReq, ERROR_CODES.BAD_RESPONSE));
+    const snap = parseStatusResponse(await sendStatusWithRetry(transport, statusReq, cfg, { sleep, now, signal, started }));
     polls++;
     if (typeof onProgress === 'function') {
       try { onProgress({ ...snap, jobId, polls }); } catch { /* a UI callback must never break the job */ }
