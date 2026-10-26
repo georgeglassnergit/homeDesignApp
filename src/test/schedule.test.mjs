@@ -15,7 +15,7 @@
 //   • the disclaimer (constraint #6) is present and surfaced in the CSV
 // Own file (pick-protocol §5) so it never collides with in-flight test work.
 import {
-  createProject, createLevel, createWall, createOpening, createRoom, createRoof,
+  createProject, createLevel, createWall, createOpening, createRoom, createRoof, createFurniture,
   serialize, validateProject, deserialize, _resetIds, stackElevations,
 } from '../core/model.js';
 import {
@@ -43,6 +43,21 @@ function sampleProject() {
   const lvl = createLevel({ name: 'Ground', walls: [w1, w2, w3, w4], openings: [door, win], rooms: [room], roof: createRoof({ type: 'gable' }) });
   const p = createProject({ name: 'Test Home', levels: [lvl] });
   stackElevations(p.levels);
+  return p;
+}
+
+// a furnished copy of the sample project: 1 sofa + 2 identical chairs on the Ground storey,
+// plus a lamp with no levelId (valid "not tied to a storey"). Furniture lives in the
+// top-level project.furniture[] and carries its own levelId.
+function furnishedProject() {
+  const p = sampleProject();                       // single 'Ground' level
+  const lvlId = p.levels[0].id;
+  p.furniture = [
+    createFurniture('sofa.glb',  { name: 'Sofa',  levelId: lvlId }),
+    createFurniture('chair.glb', { name: 'Chair', levelId: lvlId }),
+    createFurniture('chair.glb', { name: 'Chair', levelId: lvlId }),  // identical → rolls up to qty 2
+    createFurniture('lamp.glb',  { name: 'Lamp',  levelId: null }),   // unassigned storey
+  ];
   return p;
 }
 
@@ -96,6 +111,42 @@ function sampleProject() {
   ok(near(s.grossWallArea, 37.8), 'summary: gross 37.8 m²');
   ok(near(s.openingArea, 3.57), 'summary: openings 3.57 m²');
   ok(near(s.netWallArea, 34.23), 'summary: net 34.23 m²');
+})();
+
+// ===== furniture (FF&E) schedule =====
+(() => {
+  const s = buildSchedule(furnishedProject());
+  ok(s.summary.furniture === 4, 'summary: 4 furniture placements counted');
+  ok(s.furniture.length === 3, 'furniture grouped into 3 distinct (level · item) rows');
+  const chair = s.furniture.find((f) => f.name === 'Chair');
+  ok(chair && chair.count === 2 && chair.level === 'Ground', 'identical chairs roll up to qty 2 under their storey');
+  const sofa = s.furniture.find((f) => f.name === 'Sofa');
+  ok(sofa && sofa.count === 1 && sofa.level === 'Ground', 'sofa qty 1 under its storey');
+  const lamp = s.furniture.find((f) => f.name === 'Lamp');
+  ok(lamp && lamp.count === 1 && lamp.level === 'Unassigned', 'a null levelId is labelled Unassigned (valid: not tied to a storey)');
+  ok(s.furniture[s.furniture.length - 1].level === 'Unassigned', 'unassigned furniture sorts after the storey-assigned items');
+})();
+
+// ===== furniture absent / degenerate → empty section, count 0, no throw (old saves) =====
+(() => {
+  const s = buildSchedule(sampleProject());
+  ok(Array.isArray(s.furniture) && s.furniture.length === 0, 'project with no furniture → empty furniture schedule');
+  ok(s.summary.furniture === 0, 'summary furniture count 0 when none placed');
+  ok(buildSchedule({}).summary.furniture === 0, 'furniture-less/degenerate project → 0 furniture, no throw');
+  // a blank/degenerate furniture entry must not throw and must not be counted
+  const p = sampleProject(); p.furniture = [null, createFurniture('x.glb', { name: 'Desk', levelId: p.levels[0].id })];
+  const s2 = buildSchedule(p);
+  ok(s2.summary.furniture === 1 && s2.furniture.length === 1, 'blank furniture entry is skipped, not counted or thrown on');
+})();
+
+// ===== furniture CSV section =====
+(() => {
+  const csv = scheduleToCsv(buildSchedule(furnishedProject()));
+  ok(csv.includes('Furniture'), 'CSV has the "Furniture" section');
+  ok(csv.includes('Level,Item,Qty'), 'furniture header columns present');
+  ok(csv.includes('Ground,Chair,2'), 'furniture row rendered with the grouped quantity');
+  ok(csv.includes('Unassigned,Lamp,1'), 'unassigned furniture row rendered');
+  ok(csv.includes('Furniture,4,'), 'summary block carries the furniture count');
 })();
 
 // ===== multi-storey aggregation =====
@@ -158,7 +209,7 @@ function sampleProject() {
   ok(csv.includes('\r\n'), 'CSV uses CRLF line endings');
   ok(csv.endsWith('\r\n'), 'CSV ends with a terminator');
   ok(csv.includes(SCHEDULE_DISCLAIMER), 'CSV surfaces the advisory disclaimer');
-  for (const section of ['Summary', 'Rooms', 'Openings', 'Walls by level']) {
+  for (const section of ['Summary', 'Rooms', 'Openings', 'Walls by level', 'Furniture']) {
     ok(csv.includes(section), `CSV has the "${section}" section`);
   }
   ok(csv.includes('Floor area (m²),Perimeter (m),Finish'), 'room header columns present');
@@ -190,11 +241,11 @@ function sampleProject() {
 
 // ===== the schedule mutates nothing (save byte-identical) + old saves still valid =====
 (() => {
-  const p = sampleProject();
+  const p = furnishedProject();   // includes furniture, so reading it is proven mutation-free too
   const before = serialize(p);
   buildSchedule(p); scheduleToCsv(p); scheduleToCsv(buildSchedule(p)); scheduleBaseName(p);
-  ok(serialize(p) === before, 'schedule leaves the project byte-identical (no mutation, no save field)');
-  ok(validateProject(deserialize(before)).ok, 'project still validates after scheduling (lossless save intact)');
+  ok(serialize(p) === before, 'schedule leaves the (furnished) project byte-identical (no mutation, no save field)');
+  ok(validateProject(deserialize(before)).ok, 'furnished project still validates after scheduling (lossless save intact)');
 })();
 
 // ---- summary ----
