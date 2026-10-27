@@ -3,6 +3,9 @@ vendor/
 dist/
 *.log
 .DS_Store
+# Local secrets for `wrangler pages dev` — the real provider key must never be committed.
+# (The committed placeholder is `.dev.vars.example`.)
+.dev.vars
 # headless-verification vendored deps + build scaffold (regenerated per run; never committed)
 /three/
 /three-bvh-csg/

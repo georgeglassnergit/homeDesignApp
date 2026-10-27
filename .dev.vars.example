@@ -1,0 +1,8 @@
+# Example environment for the same-origin furnish proxy (functions/api/furnish*).
+#
+# Copy this file to `.dev.vars` (git-ignored) for local `wrangler pages dev`, and set the SAME
+# key as a Cloudflare Pages environment variable for production. The value is a SECRET and must
+# never be committed — this example ships with a blank placeholder only.
+#
+# Where to get it: https://www.meshy.ai/ → account → API keys.
+MESHY_API_KEY=
