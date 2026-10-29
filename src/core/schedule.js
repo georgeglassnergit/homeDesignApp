@@ -8,8 +8,10 @@
 //   • an opening schedule (level · door/window · host wall · size · sill)
 //   • a wall takeoff per storey (count · running length · gross wall face area,
 //     openings deducted → the net area a paint/plaster/cladding estimate wants)
-//   • a summary (storeys, GFA, room/door/window counts, running wall length, net area)
-// and a CSV rendering of all four that opens in Excel / Numbers / Sheets / LibreCAD.
+//   • a furniture (FF&E) schedule (level · item · quantity), grouped so identical
+//     placed objects roll up to a count — the inventory a furnished design wants
+//   • a summary (storeys, GFA, room/door/window/furniture counts, running wall length, net area)
+// and a CSV rendering of all five that opens in Excel / Numbers / Sheets / LibreCAD.
 //
 // ── HONESTY (constraint #6 in docs/PHASE-3-PLAN.md) ──────────────────────────
 // This is a DESIGN / VISUALISATION tool, NOT a quantity surveyor. These numbers
@@ -20,8 +22,8 @@
 // not a two-face drywall count, a stud count, or a waste-factored order quantity.
 //
 // Purity / save contract: this module only READS the model (levels, walls,
-// openings, rooms) through the pure model helpers and returns plain data. It
-// stores nothing, mutates nothing, issues no command, and adds no save field — so
+// openings, rooms, furniture) through the pure model helpers and returns plain
+// data. It stores nothing, mutates nothing, issues no command, and adds no save field — so
 // it cannot touch the Phase 1 lossless save (proven in src/test/schedule.test.mjs).
 // It imports only pure model helpers; there is no Three.js here.
 // ============================================================================
@@ -44,7 +46,7 @@ function levelName(level, index) {
 
 // ── the schedule as structured data ─────────────────────────────────────────
 //
-// buildSchedule(project) → { project, rooms[], openings[], wallsByLevel[], summary }
+// buildSchedule(project) → { project, rooms[], openings[], wallsByLevel[], furniture[], summary }
 // Every measurement is in the model's native units (metres / m²). Per-row values are
 // rounded to 2 dp for presentation; summary totals sum the RAW values first, then round
 // once — so a total never drifts from re-rounding its parts.
@@ -59,9 +61,15 @@ export function buildSchedule(project) {
   let totFloor = 0, totWallLen = 0, totGross = 0, totOpening = 0;
   let nRooms = 0, nWalls = 0, nDoors = 0, nWindows = 0;
 
+  // level id → display name / model order, so each top-level furniture record resolves
+  // to the storey it sits on (furniture carries its own levelId, not nested under a level).
+  const levelNameById = new Map();
+  const levelOrderById = new Map();
+
   for (let li = 0; li < levels.length; li++) {
     const lvl = levels[li] || {};
     const name = levelName(lvl, li);
+    if (lvl.id != null) { levelNameById.set(lvl.id, name); levelOrderById.set(lvl.id, li); }
     const lvlWalls = Array.isArray(lvl.walls) ? lvl.walls : [];
     const lvlOpenings = Array.isArray(lvl.openings) ? lvl.openings : [];
     const lvlRooms = Array.isArray(lvl.rooms) ? lvl.rooms : [];
@@ -128,6 +136,28 @@ export function buildSchedule(project) {
     });
   }
 
+  // furniture (FF&E) take-off — top-level project.furniture[] (each record carries its own
+  // levelId; a null/unknown id is a valid "not tied to a storey"). Identical items on the same
+  // storey roll up to a quantity; rows order by storey (model order), unassigned last, then name.
+  const furnList = Array.isArray(project && project.furniture) ? project.furniture : [];
+  const furnGroups = new Map();   // `${order}\u0000${item}` → { level, name, count, order }
+  let nFurniture = 0;
+  for (const f of furnList) {
+    if (!f) continue;             // tolerate a degenerate/blank entry without throwing
+    nFurniture++;
+    const known = f.levelId != null && levelOrderById.has(f.levelId);
+    const order = known ? levelOrderById.get(f.levelId) : levels.length;   // unassigned/unknown → last
+    const lvlName = known ? levelNameById.get(f.levelId) : 'Unassigned';
+    const item = (f.name && String(f.name)) || 'Object';
+    const key = order + '\u0000' + item;
+    const g = furnGroups.get(key);
+    if (g) g.count++;
+    else furnGroups.set(key, { level: lvlName, name: item, count: 1, order });
+  }
+  const furniture = [...furnGroups.values()]
+    .sort((a, b) => a.order - b.order || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+    .map(({ level, name, count }) => ({ level, name, count }));
+
   const summary = {
     levels: levels.length,
     rooms: nRooms,
@@ -135,6 +165,7 @@ export function buildSchedule(project) {
     windows: nWindows,
     openings: nDoors + nWindows,
     walls: nWalls,
+    furniture: nFurniture,
     floorArea: round2(totFloor),
     totalWallLength: round2(totWallLen),
     grossWallArea: round2(totGross),
@@ -148,6 +179,7 @@ export function buildSchedule(project) {
     rooms,
     openings,
     wallsByLevel,
+    furniture,
     summary,
   };
 }
@@ -165,8 +197,8 @@ export function csvField(v) {
 const row = (cells) => cells.map(csvField).join(',');
 
 // buildSchedule result → a single sectioned CSV string (Summary · Rooms · Openings ·
-// Walls by level). Sections are separated by a blank line and led by a title cell so the
-// one file opens cleanly in any spreadsheet. Line terminator is CRLF (Excel-friendly).
+// Walls by level · Furniture). Sections are separated by a blank line and led by a title
+// cell so the one file opens cleanly in any spreadsheet. Line terminator is CRLF (Excel-friendly).
 export function scheduleToCsv(schedule) {
   const s = schedule && schedule.summary ? schedule : buildSchedule(schedule);
   const lines = [];
@@ -182,6 +214,7 @@ export function scheduleToCsv(schedule) {
   lines.push(row(['Doors', s.summary.doors, '']));
   lines.push(row(['Windows', s.summary.windows, '']));
   lines.push(row(['Walls', s.summary.walls, '']));
+  lines.push(row(['Furniture', s.summary.furniture || 0, '']));
   lines.push(row(['Floor area (GFA)', s.summary.floorArea, 'm²']));
   lines.push(row(['Total wall length', s.summary.totalWallLength, 'm']));
   lines.push(row(['Gross wall area (1 face)', s.summary.grossWallArea, 'm²']));
@@ -204,6 +237,11 @@ export function scheduleToCsv(schedule) {
   for (const w of s.wallsByLevel) {
     lines.push(row([w.level, w.count, w.totalLength, w.avgHeight, w.grossWallArea, w.openingArea, w.netWallArea]));
   }
+  lines.push('');
+
+  lines.push(row(['Furniture']));
+  lines.push(row(['Level', 'Item', 'Qty']));
+  for (const f of (s.furniture || [])) lines.push(row([f.level, f.name, f.count]));
 
   return lines.join('\r\n') + '\r\n';
 }
