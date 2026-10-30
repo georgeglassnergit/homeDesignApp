@@ -1,6 +1,8 @@
 import { createViewer } from './viewer/viewer.js';
 import { createWalkController } from './viewer/walkCamera.js';
 import { buildScene, sceneBounds, rebuildGeometry } from './build/sceneBuilder.js';
+import { loadFurniture, loadGlbModel } from './build/furniture.js';
+import { furnishFromImage, FurnishPhase } from './app/furnishController.js';
 import { serialize, deserialize, validateProject, projectCounts, createLevel, createRoof, findLevel, roomAtPoint, polygonCentroid, createRoom } from './core/model.js';
 import { detectNewRooms } from './core/roomDetect.js';
 import { roofOverhangs } from './core/roofShape.js';
@@ -94,6 +96,7 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
     function refresh() {
       reconcileActiveLevel();
       rebuildGeometry(home, project);
+      reconcileFurniture();   // keep the 3D furniture a pure function of project.furniture (fire-and-forget)
       plan.draw();
       runRoundTrip();
       // keep the view seam in sync (undo/redo/template-load may change meta.view)
@@ -103,6 +106,36 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       renderLevels();      // storeys may have changed (add/remove/rename/height, or undo/redo)
       renderRoof();        // roof type/pitch may have changed (undo/redo of a roof edit)
       updateStatus();
+    }
+
+    // The 3D furniture objects are a pure function of project.furniture. rebuildGeometry keeps the
+    // loaded GLBs in place (they aren't re-derived geometry) but never adds or drops records, so a
+    // model change to furniture — a furnish commit, an undo/redo of one, or a delete — has to be
+    // reconciled into the scene separately. This drops meshes whose record is gone and loads records
+    // that have no mesh yet. loadFurniture is async (the GLB), so this is async: refresh() fires it
+    // without awaiting (the scene catches up a microtask later, visually instant), while the furnish
+    // flow awaits it so its "Added" confirmation is truthful. A lock serialises overlapping runs so
+    // rapid refreshes never double-load; a run requested mid-flight re-runs once more after.
+    let _furnReconciling = false, _furnReconcileAgain = false;
+    async function reconcileFurniture() {
+      if (_furnReconciling) { _furnReconcileAgain = true; return; }
+      _furnReconciling = true;
+      try {
+        do {
+          _furnReconcileAgain = false;
+          const want = new Set(project.furniture.map((f) => f.id));
+          const meshes = () => home.children.filter((c) => c.userData && c.userData.kind === 'furniture');
+          for (const obj of meshes()) {                 // drop meshes whose record is gone
+            if (!want.has(obj.userData.modelId)) home.remove(obj);
+          }
+          const have = new Set(meshes().map((c) => c.userData.modelId));
+          const elevOf = (id) => (project.levels.find((l) => l.id === id)?.elevation) ?? 0;
+          const missing = project.furniture.filter((f) => !have.has(f.id));
+          if (missing.length) await Promise.all(missing.map((f) => loadFurniture(f, home, elevOf(f.levelId))));
+        } while (_furnReconcileAgain);
+      } finally {
+        _furnReconciling = false;
+      }
     }
 
     // S5: exterior <-> cutaway. View is a display pref (project.meta.view); the per-frame
@@ -975,6 +1008,102 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       else toggleUnderlayPanel(false);
     }
 
+    // --- Furnish from a photo (Simple seam: 'furnish-photo-3d') — the image→3D pipeline, wired ---
+    // The whole Phase-4 furnish stack (pure pipeline core → application controller → same-origin
+    // proxy) has been reachable only from tests until now; this is the view-layer slice that puts
+    // it behind a button. Flow: pick a photo → read it as a data URL → furnishFromImage() runs the
+    // injected pipeline (submit→poll→verify-the-GLB-loads→commit as an UNDOABLE furniture record),
+    // then we load that record's GLB into the live scene (rebuildGeometry keeps existing furniture
+    // but never ADDS new records, so a fresh model must be loaded in explicitly here).
+    //
+    // Secrets stay server-side: the transport is a bare same-origin fetch to the app's own
+    // /api/furnish proxy — the client never holds or sends the provider key. A generation can take
+    // minutes, so the button doubles as a Cancel while a job runs (an injected { aborted } signal).
+    const furnishGroup = $('furnish-group'), furnishBtn = $('furnish-btn'), furnishFile = $('furnish-file');
+    let furnishRun = null;   // the in-flight run's cancel handle + abort signal, or null when idle
+    const furnishBusy = () => !!furnishRun;
+
+    // Place a generated model at the centre of the current plan viewport, on the active storey —
+    // where the user is looking — so it lands in view rather than at the world origin.
+    function furnishPlacement() {
+      return { levelId: app.activeLevelId, position: { x: planView.vp.center.x, z: planView.vp.center.z } };
+    }
+    // Production transport: a same-origin POST/GET to the proxy that injects the key server-side.
+    // Returns the fetch Response as-is — it already satisfies the pipeline's `{ ok, status, json() }`.
+    const furnishFetch = (req) => fetch(req.url, { method: req.method, headers: req.headers, body: req.body });
+
+    function setFurnishBusy(on) {
+      if (!furnishBtn) return;
+      furnishBtn.classList.toggle('busy', on);
+      furnishBtn.textContent = on ? 'Cancel' : 'Furnish photo…';
+      furnishBtn.title = on
+        ? 'Cancel the 3D model that’s being generated'
+        : 'Pick a photo of a piece of furniture; a 3D model is generated and placed in your home (Undo removes it)';
+    }
+
+    // Run the furnish flow from a data: URL. Shared by the file-input handler and the headless hook.
+    // `opts.transport` / `opts.loadGlb` / `opts.config` default to the production wiring but can be
+    // overridden by the harness to drive the exact same UI path against synthetic, same-origin
+    // responses + a local GLB (never a live provider call — the F1 CI constraint).
+    async function runFurnishFromDataUrl(dataUrl, opts = {}) {
+      if (furnishBusy()) return { skipped: 'busy' };
+      const signal = { aborted: false };
+      furnishRun = { signal, cancel: () => { signal.aborted = true; } };
+      setFurnishBusy(true);
+      hint('Generating a 3D model from your photo…');
+      try {
+        const place = furnishPlacement();
+        const res = await furnishFromImage(dataUrl, {
+          history,
+          transport: opts.transport || furnishFetch,
+          loadGlb: opts.loadGlb || loadGlbModel,   // verify the GLB loads BEFORE committing
+          levelId: place.levelId,
+          position: place.position,
+          signal,
+          config: opts.config,
+          onProgress: (snap) => { if (!signal.aborted) hint(`Generating a 3D model… ${Math.round((snap.progress || 0) * 100)}%`); },
+          onPhase: (phase) => {
+            if (signal.aborted) return;
+            if (phase === FurnishPhase.VERIFYING) hint('Almost there — checking the model…');
+          },
+        });
+        // Load the committed record's GLB into the live scene (reconcileFurniture drops/loads the
+        // meshes to match the model; awaited here so the confirmation below is truthful).
+        await reconcileFurniture();
+        refresh();
+        hint(`Added “${res.furniture.name}”. Undo to remove it.`);
+        return { ok: true, furniture: res.furniture, jobId: res.jobId };
+      } catch (err) {
+        hint(signal.aborted
+          ? 'Furnishing cancelled.'
+          : (err && err.userMessage) || 'Could not furnish from that photo.');
+        return { ok: false, aborted: signal.aborted, code: err && err.code, message: (err && err.userMessage) || null };
+      } finally {
+        furnishRun = null;
+        setFurnishBusy(false);
+      }
+    }
+
+    function openFurnishPicker() { if (furnishFile && !furnishBusy()) furnishFile.click(); }
+    if (furnishBtn) furnishBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (furnishBusy()) { furnishRun.cancel(); return; }   // the button is a Cancel while a job runs
+      openFurnishPicker();
+    });
+    if (furnishFile) furnishFile.addEventListener('change', () => {
+      const f = furnishFile.files && furnishFile.files[0];
+      furnishFile.value = '';   // allow re-picking the same file
+      if (!f) return;
+      const reader = new FileReader();
+      reader.onload = () => { runFurnishFromDataUrl(String(reader.result)); };
+      reader.onerror = () => hint('Sorry — that photo could not be read.');
+      reader.readAsDataURL(f);
+    });
+    // 'furnish-photo-3d' is a Simple-tier feature, so the group is always available; keep the seam
+    // gate explicit (and future-proof if the tier ever moves to Pro).
+    function syncFurnishSeam() { if (furnishGroup) furnishGroup.classList.toggle('on', isAvailable('furnish-photo-3d', app.mode)); }
+    syncFurnishSeam();
+
     // --- D2: "Outsource" — compose a design brief to hand to a professional ---------------------
     // The second onboarding path. There is NO backend here (guardrail: never touch backend deploy
     // config); this is a content/UX helper. The intake modal collects a few OPTIONAL fields and
@@ -1271,7 +1400,7 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
         else if (sel && sel.kind === 'room') { for (const l of project.levels) { const r = l.rooms.find((x) => x.id === sel.id); if (r) stored = r.material; } }
         return { stored, materials: loc ? loc.materials : null, registered: !!(project.materials && project.materials[materialId]), msg: $('ins-msg') ? $('ins-msg').textContent : '' };
       },
-      __setMode: (m) => { app.setMode(m); syncModeButtons(); syncSnapSeam(); syncLevelSeam(); syncRoofSeam(); syncMeasureSeam(); syncExportSeam(); syncChecksSeam(); syncUnderlaySeam(); renderInspector(); updateStatus(); },
+      __setMode: (m) => { app.setMode(m); syncModeButtons(); syncSnapSeam(); syncLevelSeam(); syncRoofSeam(); syncMeasureSeam(); syncExportSeam(); syncChecksSeam(); syncUnderlaySeam(); syncFurnishSeam(); renderInspector(); updateStatus(); },
       __setUnits: (u) => { app.setUnits(u); syncUnitButtons(); syncPolarUnit(); renderInspector(); },
       // C1 polar-entry handles: commit a segment at an exact length(m)+angle(deg) and read the
       // live rubber-band's length+angle — drive the same tool path the panel's Add button uses.
@@ -1402,6 +1531,17 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       __measureSeamVisible: () => !!(measureBtn && measureBtn.classList.contains('on')),
       __measureClick: (x, z) => { controller.pointerDown({ x, z }); plan.draw(); return window.__measure(); },
       __measure: () => { const s = controller.measureSegment(); return s ? { from: s.from, to: s.to, complete: s.complete, meters: Math.hypot(s.to.x - s.from.x, s.to.z - s.from.z) } : null; },
+      // Furnish-from-a-photo (Simple seam 'furnish-photo-3d') handles — deterministic driving from
+      // the headless harness. A file dialog can't open headlessly, so __furnishFromPhoto runs the
+      // SAME flow the file-input change handler runs (FileReader → runFurnishFromDataUrl), but lets
+      // the harness inject a synthetic same-origin transport + a local GLB (never a live provider
+      // call — the F1 CI constraint). __furnishCount reports furniture objects actually in the 3D
+      // scene so the harness can prove the generated model landed (not just the model record).
+      __furnishSeamVisible: () => !!(furnishBtn && furnishBtn.offsetParent !== null),
+      __furnishBusy: () => furnishBusy(),
+      __furnishBtnLabel: () => (furnishBtn ? furnishBtn.textContent : null),
+      __furnishFromPhoto: (dataUrl, opts) => runFurnishFromDataUrl(dataUrl, opts || {}),
+      __furnishSceneCount: () => home.children.filter((c) => c.userData && c.userData.kind === 'furniture').length,
     });
     window.__selftest = () => { const j = serialize(project); const p = deserialize(j); return { valid: validateProject(p).ok, lossless: serialize(p) === j, counts: projectCounts(p) }; };
   } catch (e) {

@@ -29,9 +29,11 @@ const { chromium } = require(pwPath);
 const CHROME_CANDIDATES = ['/opt/pw-browsers/chromium-1194/chrome-linux/chrome'];
 let chromePath = CHROME_CANDIDATES.find(existsSync);
 if (!chromePath) {
-  // fall back to any chromium-* chrome under the browsers path
+  // Fall back to any chromium-* chrome under the browsers path. The layout drifts between
+  // Playwright builds — older ones ship `chrome-linux/chrome`, newer ones `chrome-linux64/chrome`
+  // (and the version suffix bumps), so match both rather than pinning a single version/dir.
   const { execSync } = require('child_process');
-  chromePath = execSync('ls -d /opt/pw-browsers/chromium-*/chrome-linux/chrome 2>/dev/null | head -1').toString().trim();
+  chromePath = execSync('ls -d /opt/pw-browsers/chromium-*/chrome-linux*/chrome 2>/dev/null | head -1').toString().trim();
 }
 if (!chromePath) { console.error('Chromium binary not found under /opt/pw-browsers'); process.exit(2); }
 
