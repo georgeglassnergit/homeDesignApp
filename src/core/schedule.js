@@ -5,13 +5,16 @@
 // one thing a real home designer reaches for that none of them give: a flat,
 // spreadsheet-shaped SCHEDULE of the design —
 //   • a room schedule  (level · name · floor area · perimeter · finish)
-//   • an opening schedule (level · door/window · host wall · size · sill)
+//   • an opening schedule (level · mark · door/window · host wall · size · sill)
+//   • an opening-TYPE schedule (the tagged door/window schedule a supplier orders from:
+//     identical openings — same kind + size + sill — roll up to one marked type D1…/W1…
+//     with a quantity, mirroring the furniture roll-up; marks are project-wide)
 //   • a wall takeoff per storey (count · running length · gross wall face area,
 //     openings deducted → the net area a paint/plaster/cladding estimate wants)
 //   • a furniture (FF&E) schedule (level · item · quantity), grouped so identical
 //     placed objects roll up to a count — the inventory a furnished design wants
-//   • a summary (storeys, GFA, room/door/window/furniture counts, running wall length, net area)
-// and a CSV rendering of all five that opens in Excel / Numbers / Sheets / LibreCAD.
+//   • a summary (storeys, GFA, room/door/window/type/furniture counts, running wall length, net area)
+// and a CSV rendering of all six sections that opens in Excel / Numbers / Sheets / LibreCAD.
 //
 // ── HONESTY (constraint #6 in docs/PHASE-3-PLAN.md) ──────────────────────────
 // This is a DESIGN / VISUALISATION tool, NOT a quantity surveyor. These numbers
@@ -61,6 +64,13 @@ export function buildSchedule(project) {
   let totFloor = 0, totWallLen = 0, totGross = 0, totOpening = 0;
   let nRooms = 0, nWalls = 0, nDoors = 0, nWindows = 0;
 
+  // project-wide door/window TYPE marks (D1…/W1…): identical openings — same kind + size + sill —
+  // roll up to one tagged, counted type, the door/window schedule an estimator or supplier orders
+  // from (mirrors the furniture roll-up below). A mark is assigned the first time its type is seen,
+  // in model order, and is shared across storeys (a standard interior door on two floors is one type).
+  const openingTypeGroups = new Map();  // `${kind}|${w}|${h}|${sill}` → { mark, kind, width, height, sill, count, seq }
+  let nDoorTypes = 0, nWindowTypes = 0, typeSeq = 0;
+
   // level id → display name / model order, so each top-level furniture record resolves
   // to the storey it sits on (furniture carries its own levelId, not nested under a level).
   const levelNameById = new Map();
@@ -95,15 +105,28 @@ export function buildSchedule(project) {
       const w = num(o.width), h = num(o.height);
       const area = w * h;
       lvlOpeningArea += area;
-      if (o.kind === 'window') nWindows++; else nDoors++;
+      const kind = o.kind === 'window' ? 'window' : 'door';
+      const rw = round2(w), rh = round2(h), rs = round2(num(o.sill));
+      // assign / reuse this opening's type mark (group on the rounded, presented size so float
+      // noise never splits one real type into two)
+      const key = kind + '|' + rw + '|' + rh + '|' + rs;
+      let g = openingTypeGroups.get(key);
+      if (!g) {
+        const mark = kind === 'window' ? `W${++nWindowTypes}` : `D${++nDoorTypes}`;
+        g = { mark, kind, width: rw, height: rh, sill: rs, count: 0, seq: typeSeq++ };
+        openingTypeGroups.set(key, g);
+      }
+      g.count++;
+      if (kind === 'window') nWindows++; else nDoors++;
       openings.push({
         level: name,
-        kind: o.kind === 'window' ? 'window' : 'door',
+        mark: g.mark,
+        kind,
         wall: o.wallId || '',
-        width: round2(w),
-        height: round2(h),
+        width: rw,
+        height: rh,
         area: round2(area),
-        sill: round2(num(o.sill)),
+        sill: rs,
       });
     }
 
@@ -158,12 +181,20 @@ export function buildSchedule(project) {
     .sort((a, b) => a.order - b.order || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
     .map(({ level, name, count }) => ({ level, name, count }));
 
+  // the tagged door/window schedule: all doors (D1…) then all windows (W1…), each in mark order
+  // (first-seen). Depends only on the groups gathered above, so it's deterministic for a given model.
+  const openingTypes = [...openingTypeGroups.values()]
+    .sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'door' ? -1 : 1) || (a.seq - b.seq))
+    .map(({ mark, kind, width, height, sill, count }) => ({ mark, kind, width, height, sill, count }));
+
   const summary = {
     levels: levels.length,
     rooms: nRooms,
     doors: nDoors,
     windows: nWindows,
     openings: nDoors + nWindows,
+    doorTypes: nDoorTypes,
+    windowTypes: nWindowTypes,
     walls: nWalls,
     furniture: nFurniture,
     floorArea: round2(totFloor),
@@ -178,6 +209,7 @@ export function buildSchedule(project) {
     disclaimer: SCHEDULE_DISCLAIMER,
     rooms,
     openings,
+    openingTypes,
     wallsByLevel,
     furniture,
     summary,
@@ -197,7 +229,7 @@ export function csvField(v) {
 const row = (cells) => cells.map(csvField).join(',');
 
 // buildSchedule result → a single sectioned CSV string (Summary · Rooms · Openings ·
-// Walls by level · Furniture). Sections are separated by a blank line and led by a title
+// Opening types · Walls by level · Furniture). Sections are separated by a blank line and led by a title
 // cell so the one file opens cleanly in any spreadsheet. Line terminator is CRLF (Excel-friendly).
 export function scheduleToCsv(schedule) {
   const s = schedule && schedule.summary ? schedule : buildSchedule(schedule);
@@ -213,6 +245,8 @@ export function scheduleToCsv(schedule) {
   lines.push(row(['Rooms', s.summary.rooms, '']));
   lines.push(row(['Doors', s.summary.doors, '']));
   lines.push(row(['Windows', s.summary.windows, '']));
+  lines.push(row(['Door types', s.summary.doorTypes || 0, '']));
+  lines.push(row(['Window types', s.summary.windowTypes || 0, '']));
   lines.push(row(['Walls', s.summary.walls, '']));
   lines.push(row(['Furniture', s.summary.furniture || 0, '']));
   lines.push(row(['Floor area (GFA)', s.summary.floorArea, 'm²']));
@@ -228,8 +262,14 @@ export function scheduleToCsv(schedule) {
   lines.push('');
 
   lines.push(row(['Openings']));
-  lines.push(row(['Level', 'Type', 'Host wall', 'Width (m)', 'Height (m)', 'Area (m²)', 'Sill (m)']));
-  for (const o of s.openings) lines.push(row([o.level, o.kind, o.wall, o.width, o.height, o.area, o.sill]));
+  lines.push(row(['Level', 'Mark', 'Type', 'Host wall', 'Width (m)', 'Height (m)', 'Area (m²)', 'Sill (m)']));
+  for (const o of s.openings) lines.push(row([o.level, o.mark, o.kind, o.wall, o.width, o.height, o.area, o.sill]));
+  lines.push('');
+
+  // the tagged door/window schedule proper — identical openings rolled up to a marked type + qty
+  lines.push(row(['Opening types']));
+  lines.push(row(['Mark', 'Type', 'Width (m)', 'Height (m)', 'Sill (m)', 'Qty']));
+  for (const t of (s.openingTypes || [])) lines.push(row([t.mark, t.kind, t.width, t.height, t.sill, t.count]));
   lines.push('');
 
   lines.push(row(['Walls by level']));
