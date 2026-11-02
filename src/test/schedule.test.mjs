@@ -4,6 +4,7 @@
 // Rounds out the export family with a spreadsheet-shaped SCHEDULE of the design. This proves the
 // pure builder + CSV renderer (core/schedule.js):
 //   • buildSchedule: room schedule (area/perimeter), opening schedule (door/window sizes),
+//     tagged opening-TYPE schedule (identical openings roll up to a marked D#/W# type + qty),
 //     per-storey wall take-off (count, running length, length-weighted mean height,
 //     gross wall face area, opening deduction, net area), and a rolled-up summary
 //   • totals sum RAW then round once (no re-rounding drift); net area never goes negative
@@ -149,6 +150,80 @@ function furnishedProject() {
   ok(csv.includes('Furniture,4,'), 'summary block carries the furniture count');
 })();
 
+// ===== opening-TYPE schedule (tagged door/window roll-up) =====
+// A long wall carrying: 3 standard doors (0.9×2.1), 1 wider door (1.0×2.1), 2 identical windows
+// (1.4×1.2 sill 0.9) → types D1 ×3, D2 ×1, W1 ×2. Marks assigned in first-seen (model) order.
+function typedProject() {
+  _resetIds();
+  const wall = createWall({ x: 0, z: 0 }, { x: 20, z: 0 }); // long enough to host several openings
+  const openings = [
+    createOpening(wall.id, 'door',   { offset: 1,  width: 0.9, height: 2.1 }),            // D1
+    createOpening(wall.id, 'door',   { offset: 3,  width: 0.9, height: 2.1 }),            // D1
+    createOpening(wall.id, 'door',   { offset: 5,  width: 0.9, height: 2.1 }),            // D1
+    createOpening(wall.id, 'door',   { offset: 7,  width: 1.0, height: 2.1 }),            // D2 (wider)
+    createOpening(wall.id, 'window', { offset: 9,  width: 1.4, height: 1.2, sill: 0.9 }), // W1
+    createOpening(wall.id, 'window', { offset: 12, width: 1.4, height: 1.2, sill: 0.9 }), // W1
+  ];
+  const lvl = createLevel({ name: 'Ground', walls: [wall], openings });
+  return createProject({ name: 'Typed Home', levels: [lvl] });
+}
+
+(() => {
+  const s = buildSchedule(typedProject());
+  // summary type counts
+  ok(s.summary.doors === 4 && s.summary.windows === 2, 'summary still counts every opening instance (4 doors, 2 windows)');
+  ok(s.summary.doorTypes === 2 && s.summary.windowTypes === 1, 'summary: 2 distinct door types + 1 window type');
+  // the tagged schedule itself: doors first (mark order), then windows
+  ok(s.openingTypes.length === 3, 'three distinct opening types (D1, D2, W1)');
+  ok(s.openingTypes.map((t) => t.mark).join(',') === 'D1,D2,W1', 'doors (D1,D2) sort before windows (W1), each in first-seen mark order');
+  const d1 = s.openingTypes[0], d2 = s.openingTypes[1], w1 = s.openingTypes[2];
+  ok(d1.mark === 'D1' && d1.kind === 'door' && near(d1.width, 0.9) && near(d1.height, 2.1) && d1.count === 3, 'D1 = 0.9×2.1 door, qty 3 (identical doors roll up)');
+  ok(d2.mark === 'D2' && near(d2.width, 1.0) && d2.count === 1, 'D2 = the 1.0 m-wide door, qty 1 (a different size is a different type)');
+  ok(w1.mark === 'W1' && w1.kind === 'window' && near(w1.sill, 0.9) && w1.count === 2, 'W1 = 1.4×1.2 window sill 0.9, qty 2');
+  // the type counts reconcile with the raw instance counts
+  const typeDoorQty = s.openingTypes.filter((t) => t.kind === 'door').reduce((a, t) => a + t.count, 0);
+  const typeWinQty = s.openingTypes.filter((t) => t.kind === 'window').reduce((a, t) => a + t.count, 0);
+  ok(typeDoorQty === s.summary.doors && typeWinQty === s.summary.windows, 'type quantities sum back to the raw door/window instance totals');
+  // every per-instance opening cross-references its type mark
+  ok(s.openings.every((o) => typeof o.mark === 'string' && /^[DW]\d+$/.test(o.mark)), 'each per-instance opening carries a D#/W# mark');
+  ok(s.openings.filter((o) => o.mark === 'D1').length === 3, 'the three 0.9×2.1 door instances all carry mark D1');
+})();
+
+// ===== opening-type marks are PROJECT-WIDE (shared across storeys) =====
+(() => {
+  _resetIds();
+  const mk = (name, x) => {
+    const w = createWall({ x: 0, z: x }, { x: 6, z: x });
+    const d = createOpening(w.id, 'door', { offset: 1, width: 0.9, height: 2.1 }); // same type both floors
+    return createLevel({ name, walls: [w], openings: [d] });
+  };
+  const p = createProject({ name: 'Two Floor', levels: [mk('Ground', 0), mk('Upper', 10)] });
+  stackElevations(p.levels);
+  const s = buildSchedule(p);
+  ok(s.summary.doorTypes === 1, 'a standard door on two storeys is ONE project-wide type, not two');
+  ok(s.openingTypes.length === 1 && s.openingTypes[0].mark === 'D1' && s.openingTypes[0].count === 2, 'D1 rolls up both storeys → qty 2');
+})();
+
+// ===== opening-type CSV section =====
+(() => {
+  const csv = scheduleToCsv(buildSchedule(typedProject()));
+  ok(csv.includes('Opening types'), 'CSV has the "Opening types" section');
+  ok(csv.includes('Mark,Type,Width (m),Height (m),Sill (m),Qty'), 'opening-type header columns present');
+  ok(csv.includes('D1,door,0.9,2.1,0,3'), 'D1 type row rendered with the rolled-up quantity');
+  ok(csv.includes('W1,window,1.4,1.2,0.9,2'), 'W1 type row rendered');
+  ok(csv.includes('Door types,2,') && csv.includes('Window types,1,'), 'summary block carries the distinct-type counts');
+  // the per-instance Openings section now cross-references the mark
+  ok(csv.includes('Level,Mark,Type,Host wall,Width (m),Height (m),Area (m²),Sill (m)'), 'per-instance Openings header carries the Mark column');
+})();
+
+// ===== opening types: empty / degenerate → empty section, no throw =====
+(() => {
+  const s = buildSchedule(sampleProject()); // 1 door + 1 window, distinct → D1 + W1
+  ok(s.openingTypes.length === 2 && s.summary.doorTypes === 1 && s.summary.windowTypes === 1, 'the sample home yields exactly D1 + W1');
+  ok(Array.isArray(buildSchedule({}).openingTypes) && buildSchedule({}).openingTypes.length === 0, 'no-levels project → empty openingTypes, no throw');
+  ok(buildSchedule(null).summary.doorTypes === 0, 'null project → 0 door types, no throw');
+})();
+
 // ===== multi-storey aggregation =====
 (() => {
   _resetIds();
@@ -209,7 +284,7 @@ function furnishedProject() {
   ok(csv.includes('\r\n'), 'CSV uses CRLF line endings');
   ok(csv.endsWith('\r\n'), 'CSV ends with a terminator');
   ok(csv.includes(SCHEDULE_DISCLAIMER), 'CSV surfaces the advisory disclaimer');
-  for (const section of ['Summary', 'Rooms', 'Openings', 'Walls by level', 'Furniture']) {
+  for (const section of ['Summary', 'Rooms', 'Openings', 'Opening types', 'Walls by level', 'Furniture']) {
     ok(csv.includes(section), `CSV has the "${section}" section`);
   }
   ok(csv.includes('Floor area (m²),Perimeter (m),Finish'), 'room header columns present');
