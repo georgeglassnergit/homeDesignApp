@@ -359,6 +359,15 @@
       #underlay-panel #underlay-calibrate.armed { background: #2f6db0; color: #fff; border-color: #2f6db0; }
       #underlay-panel #underlay-calibrate.hidden { display: none; }
       #underlay-panel .up-hint { color: #8a7c6c; font-size: 10.5px; margin-top: 9px; line-height: 1.4; }
+
+      /* Furnish-from-a-photo (Simple seam: 'furnish-photo-3d') — the image→3D (Meshy) pipeline
+         made reachable. One toolbar button: pick a photo → a 3D model is generated server-side
+         and dropped into the home as an undoable furniture record. While a job runs the button
+         turns into a Cancel affordance (a generation can take minutes). The key stays server-side
+         — the browser only ever talks to the app's own same-origin /api/furnish proxy. */
+      #furnish-group { display: none; }          /* shown by the seam gate (Simple-tier → always on) */
+      #furnish-group.on { display: flex; }
+      #furnish-btn.busy { background: #2f6db0; color: #fff; border-color: #2f6db0; }
     </style>
   </head>
   <body>
@@ -421,6 +430,9 @@
         </div>
         <div class="group" id="detect-group" title="Find rooms enclosed by your walls and add them">
           <button id="detect-btn" title="Detect rooms from closed wall loops, then click a highlighted area to add it">Find&nbsp;rooms</button>
+        </div>
+        <div class="group" id="furnish-group" title="Turn a photo of a piece of furniture into a 3D model and drop it into your home">
+          <button id="furnish-btn" title="Pick a photo of a piece of furniture; a 3D model is generated and placed in your home (Undo removes it)">Furnish&nbsp;photo…</button>
         </div>
         <span class="hint" id="toolhint">Select a starter or draw a room</span>
       </div>
@@ -529,6 +541,7 @@
       <div class="up-hint">Trace walls straight over the imported plan. <b>Calibrate</b> (Pro): click two points on a known dimension, then type its real length, and the plan rescales to match. The image is a display aid only — it is not saved with your home.</div>
     </div>
     <input type="file" id="plan-file" accept="image/png,image/jpeg,image/webp,image/gif" style="display:none">
+    <input type="file" id="furnish-file" accept="image/png,image/jpeg,image/webp" style="display:none">
     <div id="outsource" aria-modal="true" role="dialog" aria-label="Outsource — prepare a design brief">
       <div id="out-card">
         <h2>Have your home drawn for you</h2>
