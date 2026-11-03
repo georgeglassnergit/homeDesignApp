@@ -38,6 +38,7 @@ export const DEFAULT_THRESHOLDS = Object.freeze({
   minEgressWindowArea: 0.5,   // emergency-egress opening ≈ 5.7 sq ft ≈ 0.53 m²
   maxEgressSill:       1.1,   // egress window sill ≈ ≤ 1.1 m off the floor
   minGlazingRatio:     0.08,  // natural light: glazing ≈ ≥ 8% of floor area (IRC R303.1-ish)
+  minOpeningJamb:      0.1,   // solid wall ("pier"/jamb) beside an opening ≈ ≥ 0.1 m to frame it
 });
 
 // A single finding is plain, serializable data. `severity` is 'advisory' (a
@@ -180,6 +181,89 @@ export function checkOpenings(project, t) {
   return out;
 }
 
+// C2. Opening placement: openings on the SAME wall that carve into each other, or that sit with
+//    too little solid wall (a "pier" / jamb) between them or against a wall end. validateProject
+//    already rejects an opening that runs off its wall or has non-finite geometry, but it only
+//    ever checks each opening in ISOLATION — it never sees that two openings on one wall OVERLAP
+//    (their CSG cut-boxes merge into one ragged hole, breaking the "two clean openings" the user
+//    intended) or that an opening is shoved so tight against a neighbour or a wall end that there
+//    is no wall left to frame it. Both are everyday direct-manipulation slips (drag one opening
+//    over another; push one into a corner), and neither is a hard model error — a mid-edit design
+//    may transiently hit them — so they belong here as approximate, overridable nudges rather than
+//    in validation. Pure geometry over `offset` / `width` and the wall length. Findings are emitted
+//    in wall-model order, then left-to-right (ascending near-edge offset), so the list is stable.
+export function checkOpeningPlacement(project, t) {
+  const out = [];
+  const levels = (project && Array.isArray(project.levels)) ? project.levels : [];
+  levels.forEach((lvl, i) => {
+    const walls = (lvl && Array.isArray(lvl.walls)) ? lvl.walls : [];
+    const openings = (lvl && Array.isArray(lvl.openings)) ? lvl.openings : [];
+    const where = levelName(lvl, i);
+    for (const w of walls) {
+      if (!w) continue;
+      const L = wallLength(w);
+      if (!(L > 0)) continue;                     // a degenerate/zero-length wall is validateProject's job
+      // The openings on THIS wall that have a usable position, left-to-right by near edge. The
+      // index tiebreak keeps two openings sharing an offset in model order (deterministic).
+      const on = openings
+        .map((o, idx) => ({ o, idx }))
+        .filter(({ o }) => o && o.wallId === w.id && Number.isFinite(o.offset) && o.offset >= 0 && o.width > 0)
+        .sort((p, q) => (p.o.offset - q.o.offset) || (p.idx - q.idx))
+        .map(({ o }) => o);
+      if (on.length === 0) continue;
+
+      // (a) Between adjacent openings: a negative pier means they overlap; a small positive pier
+      //     means too little wall to frame between them. (Overlap supersedes the jamb nudge for
+      //     the same pair — an overlapping pair never also emits opening-jamb.)
+      for (let k = 0; k < on.length - 1; k++) {
+        const prev = on[k], next = on[k + 1];
+        const pier = next.offset - (prev.offset + prev.width);   // solid wall between the two (m)
+        if (pier < -1e-6) {
+          const both = next.kind === prev.kind ? `${prev.kind}s` : 'openings';
+          out.push(finding(
+            'openings-overlap', 'advisory',
+            { levelId: lvl.id, kind: 'opening', id: next.id, where },
+            `Two ${both} on one wall overlap by about ${round2(-pier)} m — they'll cut a single ragged hole instead of two clean openings.`,
+            round2(-pier), 0, 'm',
+          ));
+        } else if (pier < t.minOpeningJamb - 1e-9) {
+          out.push(finding(
+            'opening-jamb', 'advisory',
+            { levelId: lvl.id, kind: 'opening', id: next.id, where },
+            `Two openings on one wall sit only about ${round2(pier)} m apart — under the ~${t.minOpeningJamb} m of wall usually needed to frame between them.`,
+            round2(pier), t.minOpeningJamb, 'm',
+          ));
+        }
+      }
+
+      // (b) Against the wall ends: only the leftmost opening's near pier and the rightmost
+      //     opening's far pier touch a wall end (interior openings are bounded by neighbours,
+      //     handled in (a)). A negative far pier means the opening overflows the wall —
+      //     validateProject owns that — so it is skipped here.
+      const first = on[0];
+      if (first.offset >= -1e-6 && first.offset < t.minOpeningJamb - 1e-9) {
+        out.push(finding(
+          'opening-jamb', 'advisory',
+          { levelId: lvl.id, kind: 'opening', id: first.id, where },
+          `An opening sits only about ${round2(first.offset)} m from the wall's end — under the ~${t.minOpeningJamb} m of wall usually needed to frame beside it.`,
+          round2(first.offset), t.minOpeningJamb, 'm',
+        ));
+      }
+      const last = on[on.length - 1];
+      const endPier = L - (last.offset + last.width);
+      if (endPier >= -1e-6 && endPier < t.minOpeningJamb - 1e-9) {
+        out.push(finding(
+          'opening-jamb', 'advisory',
+          { levelId: lvl.id, kind: 'opening', id: last.id, where },
+          `An opening sits only about ${round2(endPier)} m from the wall's end — under the ~${t.minOpeningJamb} m of wall usually needed to frame beside it.`,
+          round2(endPier), t.minOpeningJamb, 'm',
+        ));
+      }
+    }
+  });
+  return out;
+}
+
 // D. Storey habitability: a storey that has rooms but no window at all (natural
 //    light / ventilation), or rooms but no door at all (access). Whole-storey
 //    scope keeps this robust without associating each opening to a room.
@@ -258,7 +342,7 @@ export function checkNaturalLight(project, t) {
 // Run every advisory check over a project and return a flat, ordered result:
 //   { findings: [...], counts: {advisory, info, total}, byCode: {code: n},
 //     disclaimer, thresholds }
-// Deterministic order (checks in A→D order, elements in model order) so a UI
+// Deterministic order (checks in A→E order, elements in model order) so a UI
 // list and the tests are stable. Never throws on a malformed/partial project —
 // each check is defensive — so an in-progress design can be checked live.
 export function runAdvisoryChecks(project, opts = {}) {
@@ -268,6 +352,7 @@ export function runAdvisoryChecks(project, opts = {}) {
     ...checkRoomAreas(project, t),
     ...checkRoomProportions(project, t),
     ...checkOpenings(project, t),
+    ...checkOpeningPlacement(project, t),
     ...checkStoreyHabitability(project),
     ...checkNaturalLight(project, t),
   ];

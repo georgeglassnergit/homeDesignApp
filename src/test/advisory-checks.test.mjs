@@ -18,8 +18,9 @@ import {
 import {
   runAdvisoryChecks, advisorySummary, ADVISORY_DISCLAIMER, DEFAULT_THRESHOLDS,
   checkCeilingHeights, checkRoomAreas, checkRoomProportions, checkOpenings, checkStoreyHabitability,
-  checkNaturalLight,
+  checkNaturalLight, checkOpeningPlacement,
 } from '../core/advisoryChecks.js';
+import { sampleHome } from '../templates/sampleHome.js';
 
 let pass = 0, fail = 0; const fails = [];
 function ok(cond, msg) { if (cond) { pass++; } else { fail++; fails.push(msg); console.log('  FAIL: ' + msg); } }
@@ -357,6 +358,87 @@ const squarePts = (side) => {
   ok(!threw, 'checkRoomProportions never throws on malformed/partial input');
 
   ok(DEFAULT_THRESHOLDS.minRoomWidth === 2.1, 'default minRoomWidth is 2.1 m');
+}
+
+// ── 15. Opening placement — overlap & jamb (C2) ───────────────────────────────
+{
+  // helper: a level with one wall of length `L` and a list of [kind, offset, width] openings.
+  const wallWithOpenings = (L, specs) => {
+    const lvl = createLevel({ height: 2.7 });
+    const w = createWall({ x: 0, z: 0 }, { x: L, z: 0 });
+    lvl.walls.push(w);
+    for (const [kind, offset, width] of specs) lvl.openings.push(createOpening(w.id, kind, { offset, width }));
+    return createProject({ levels: [lvl] });
+  };
+
+  _resetIds();
+  // Two doors on a 5 m wall that overlap: door A [1.0, 1.0] (edges 1.0–2.0), door B [1.5, 0.9]
+  // (edges 1.5–2.4) → B starts 0.5 m inside A. Both are standard-size, so ONLY the placement
+  // check should speak here.
+  const ov = runAdvisoryChecks(wallWithOpenings(5, [['door', 1.0, 1.0], ['door', 1.5, 0.9]]));
+  ok(has(ov, 'openings-overlap'), 'two overlapping openings on one wall → openings-overlap advisory');
+  ok(!has(ov, 'opening-jamb'), 'an overlapping pair is NOT also flagged opening-jamb (overlap supersedes)');
+  ok(!has(ov, 'door-width') && !has(ov, 'door-height'), 'standard-size doors trip no size advisory — the overlap case is isolated');
+  const of = forCode(ov, 'openings-overlap')[0];
+  ok(of && of.measured === 0.5 && of.threshold === 0 && of.unit === 'm', 'overlap finding measures the 0.5 m overlap depth');
+  ok(of && of.ref && of.ref.kind === 'opening' && of.severity === 'advisory', 'overlap finding refs an opening, severity advisory');
+  ok(of && /overlap/i.test(of.message) && /doors/.test(of.message), 'overlap message names the overlap and the (same-kind) openings');
+
+  _resetIds();
+  // A thin PIER: door [1.0, 1.0] (edge 2.0) then window [2.05, 1.4] → 0.05 m of wall between
+  // them, under the 0.1 m jamb → opening-jamb, not overlap. Mid-wall placement keeps both clear
+  // of the wall ends (5 m wall), so exactly ONE jamb finding fires.
+  const jmb = runAdvisoryChecks(wallWithOpenings(5, [['door', 1.0, 1.0], ['window', 2.05, 1.4]]));
+  ok(has(jmb, 'opening-jamb') && !has(jmb, 'openings-overlap'), 'a 0.05 m pier between openings → opening-jamb (not overlap)');
+  ok(forCode(jmb, 'opening-jamb').length === 1, 'the between-openings jamb is the only jamb finding (both clear of the wall ends)');
+  const jf = forCode(jmb, 'opening-jamb')[0];
+  ok(jf && jf.measured === 0.05 && jf.threshold === DEFAULT_THRESHOLDS.minOpeningJamb && jf.unit === 'm', 'jamb finding carries the 0.05 m pier + the 0.1 m threshold');
+
+  _resetIds();
+  // Flush to the wall START: a door at offset 0 on a 5 m wall → near pier 0 → opening-jamb.
+  const atStart = runAdvisoryChecks(wallWithOpenings(5, [['door', 0, 0.9]]));
+  ok(has(atStart, 'opening-jamb'), 'an opening flush with the wall start (offset 0) → opening-jamb');
+  ok(forCode(atStart, 'opening-jamb').some((f) => f.measured === 0), 'the start-flush jamb measures a 0 m pier');
+
+  _resetIds();
+  // Flush to the wall END: a 0.9 m door whose far edge lands exactly on the 2 m wall end → far
+  // pier 0 → opening-jamb. (Near pier 1.1 m is fine, so this is the only jamb here.)
+  const atEnd = runAdvisoryChecks(wallWithOpenings(2, [['door', 1.1, 0.9]]));
+  ok(has(atEnd, 'opening-jamb'), 'an opening flush with the wall end → opening-jamb');
+  ok(forCode(atEnd, 'opening-jamb').length === 1, 'only the far (end) pier is flagged — the near pier is ample');
+
+  _resetIds();
+  // A well-placed single opening (ample pier both sides) and two well-spaced openings are clean.
+  const okOne = runAdvisoryChecks(wallWithOpenings(5, [['door', 1.5, 0.9]]));         // piers 1.5 / 2.6
+  ok(!has(okOne, 'opening-jamb') && !has(okOne, 'openings-overlap'), 'a single well-placed opening trips no placement advisory');
+  const okTwo = runAdvisoryChecks(wallWithOpenings(8, [['door', 1.0, 0.9], ['window', 4.0, 1.4]])); // 2.1 m pier between
+  ok(!has(okTwo, 'opening-jamb') && !has(okTwo, 'openings-overlap'), 'two well-separated openings trip no placement advisory');
+
+  _resetIds();
+  // Overridable threshold: a 0.15 m pier is clean under the default 0.1 m but flags under 0.2 m.
+  const p = wallWithOpenings(5, [['door', 1.0, 1.0], ['window', 2.15, 1.4]]);   // 0.15 m pier
+  ok(!has(runAdvisoryChecks(p), 'opening-jamb'), 'a 0.15 m pier is clean under the default 0.1 m jamb');
+  ok(has(runAdvisoryChecks(p, { thresholds: { minOpeningJamb: 0.2 } }), 'opening-jamb'),
+    'raising minOpeningJamb to 0.2 m flags the 0.15 m pier');
+
+  _resetIds();
+  // The flagship sampleHome template is CLEAN on placement (regression guard: the check must never
+  // nag a good, shipped design — every opening there sits one-per-wall with generous piers).
+  const sh = runAdvisoryChecks(sampleHome());
+  ok(!has(sh, 'openings-overlap') && !has(sh, 'opening-jamb'), 'sampleHome template → no opening-placement advisories');
+
+  _resetIds();
+  // Standalone-callable like the other checks, and never throws on malformed / partial input
+  // (missing walls, openings pointing at no wall, non-finite offset/width).
+  ok(checkOpeningPlacement(wallWithOpenings(5, [['door', 1.0, 1.0], ['door', 1.2, 0.9]]), DEFAULT_THRESHOLDS).length >= 1,
+    'checkOpeningPlacement callable standalone');
+  let threw = false;
+  const junk = [undefined, null, {}, { levels: [null, {}] },
+    { levels: [{ id: 'l', height: 2.7, walls: [null, { id: 'w', a: { x: 0, z: 0 }, b: { x: 5, z: 0 } }],
+      openings: [null, { id: 'o1', wallId: 'nope', offset: 1, width: 1 }, { id: 'o2', wallId: 'w', offset: NaN, width: 1 }] }] }];
+  for (const b of junk) { try { if (!Array.isArray(checkOpeningPlacement(b, DEFAULT_THRESHOLDS))) threw = true; } catch { threw = true; } }
+  ok(!threw, 'checkOpeningPlacement never throws on malformed/partial input');
+  ok(DEFAULT_THRESHOLDS.minOpeningJamb === 0.1, 'default minOpeningJamb is 0.1 m');
 }
 
 // ── summary ───────────────────────────────────────────────────────────────────
