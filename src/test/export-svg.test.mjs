@@ -86,8 +86,44 @@ function validateSvg(text) {
   ok(v.counts.polygon === 5 + 4 + 2, `2a one polygon per wall/opening/room (got ${v.counts.polygon})`);
   // The wall fill colour appears on every wall footprint.
   ok((out.svg.match(/fill="#3a3128"/g) || []).length === 5, '2b five wall-poché fills');
-  // Opening accent stroke appears on every opening.
-  ok((out.svg.match(/stroke="#2f6f9f"/g) || []).length === 4, '2c four opening accents');
+  // Each opening still punches exactly one page-coloured gap polygon through the wall poché.
+  ok((out.svg.match(/<polygon[^>]*fill="#faf7f1" stroke="#2f6f9f"/g) || []).length === 4, '2c four opening gaps');
+}
+
+// ---- 2+) opening SYMBOLS: a door reads as a door (leaf + swing arc), a window as a window -------
+// A bare gap is ambiguous — a door and a window look identical. Each opening now also carries its
+// conventional plan symbol: a door gets an open leaf + a 90° swing arc; a window gets a glazing line.
+{
+  _resetIds();
+  const project = sampleHome();          // 2 doors (front entry + interior) + 2 windows (east + north)
+  const out = exportSvg(project);
+  const v = validateSvg(out.svg);
+  ok(v.errors.length === 0, `2+a symbols keep the SVG structurally valid (${v.errors.join('; ')})`);
+  // each door → exactly one swing-arc <path> carrying an elliptical-arc 'A' command; windows add none.
+  const paths = out.svg.match(/<path\b[^>]*>/g) || [];
+  ok(paths.length === 2, `2+b two door swing arcs, one per door (got ${paths.length})`);
+  ok(paths.every((p) => /\sA\s/.test(p) && /fill="none"/.test(p)), '2+c each swing is an open (unfilled) arc path');
+  // accent <line>s = 2 door leaves + 2 window glazing lines (the 3 footer scale-bar lines are ink, not accent).
+  ok((out.svg.match(/<line[^>]*stroke="#2f6f9f"/g) || []).length === 4, '2+d four accent lines (2 leaves + 2 glazing)');
+  // whole opening annotation in the accent colour: 4 gaps + 2 leaves + 2 arcs + 2 glazing = 10.
+  ok((out.svg.match(/stroke="#2f6f9f"/g) || []).length === 10, '2+e ten opening-accent marks in all');
+}
+
+// ---- 2++) the door/window distinction is real: same gap, a different symbol --------------------
+{
+  const mkPlan = (kind) => {
+    _resetIds();
+    const w = createWall({ x: 0, z: 0 }, { x: 4, z: 0 }, { thickness: 0.2 });
+    return createProject({ levels: [createLevel({ walls: [w], openings: [createOpening(w.id, kind, { offset: 1, width: 0.9 })] })] });
+  };
+  const door = exportSvg(mkPlan('door')).svg;
+  const win = exportSvg(mkPlan('window')).svg;
+  ok((door.match(/<path\b/g) || []).length === 1, '2++a a door draws one swing-arc path');
+  ok((win.match(/<path\b/g) || []).length === 0, '2++b a window draws no swing arc');
+  ok(/<line[^>]*stroke="#2f6f9f"/.test(win), '2++c a window draws a glazing line');
+  ok(/<line[^>]*stroke="#2f6f9f"/.test(door), '2++d a door draws a leaf line');
+  ok(door !== win, '2++e door and window render differently for the same gap');
+  ok(validateSvg(door).errors.length === 0 && validateSvg(win).errors.length === 0, '2++f both stay valid');
 }
 
 // ---- 3) room labels: name + area, and metric/imperial changes the area text --------------------
