@@ -26,12 +26,20 @@ const pwPath = PW_CANDIDATES.find(existsSync);
 if (!pwPath) { console.error('playwright not found in', PW_CANDIDATES); process.exit(2); }
 const require = createRequire(import.meta.url);
 const { chromium } = require(pwPath);
-const CHROME_CANDIDATES = ['/opt/pw-browsers/chromium-1194/chrome-linux/chrome'];
-let chromePath = CHROME_CANDIDATES.find(existsSync);
+// Prefer the stable `/opt/pw-browsers/chromium` symlink (it tracks whatever chromium-<rev> the
+// image ships); fall back to any pinned path, then a broad glob. The layout drifts between images
+// (chrome-linux vs chrome-linux64, rev 1194 → 1243 → …), so never hardcode a single rev/dir — a
+// prior run lost a whole session when the one hardcoded path went stale.
+const CHROME_CANDIDATES = [
+  '/opt/pw-browsers/chromium',                            // stable symlink → the chrome binary
+  '/opt/pw-browsers/chromium-1243/chrome-linux64/chrome',
+  '/opt/pw-browsers/chromium-1194/chrome-linux/chrome',
+];
+let chromePath = CHROME_CANDIDATES.find((p) => existsSync(p));
 if (!chromePath) {
-  // fall back to any chromium-* chrome under the browsers path
+  // fall back to any chromium-* chrome under the browsers path (both chrome-linux and chrome-linux64)
   const { execSync } = require('child_process');
-  chromePath = execSync('ls -d /opt/pw-browsers/chromium-*/chrome-linux/chrome 2>/dev/null | head -1').toString().trim();
+  chromePath = execSync('ls -d /opt/pw-browsers/chromium-*/chrome-linux*/chrome 2>/dev/null | head -1').toString().trim();
 }
 if (!chromePath) { console.error('Chromium binary not found under /opt/pw-browsers'); process.exit(2); }
 

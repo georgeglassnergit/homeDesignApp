@@ -290,6 +290,12 @@
          revealed-in-Pro popover pattern as the roof/level/snap groups. */
       #export-group { display: none; }           /* shown only in Pro (isAvailable gate) */
       #export-group.on { display: flex; }
+      /* Furnish from a photo (Simple seam: 'furnish-photo-3d'). Available in both tiers, so the
+         group shows whenever its seam is on. The busy button is disabled while a job runs. */
+      #furnish-group { display: none; }
+      #furnish-group.on { display: flex; }
+      #furnish-btn.busy { opacity: .6; cursor: progress; }
+      .furnish-msg { color: #7a6c5d; font-size: 12px; margin-left: 2px; max-width: 160px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       #export-panel {
         position: fixed; z-index: 45; display: none;
         background: #f4efe7; border: 1px solid #cbb2a0; border-radius: 11px;
@@ -421,6 +427,11 @@
         </div>
         <div class="group" id="detect-group" title="Find rooms enclosed by your walls and add them">
           <button id="detect-btn" title="Detect rooms from closed wall loops, then click a highlighted area to add it">Find&nbsp;rooms</button>
+        </div>
+        <div class="group" id="furnish-group" title="Generate a 3D object from a photo and place it in your home">
+          <button id="furnish-btn" title="Pick a photo; we generate a 3D model and add it to your design">Furnish&nbsp;from&nbsp;photo…</button>
+          <span id="furnish-msg" class="furnish-msg"></span>
+          <input id="furnish-input" type="file" accept="image/png,image/jpeg,image/webp" style="display:none">
         </div>
         <span class="hint" id="toolhint">Select a starter or draw a room</span>
       </div>
