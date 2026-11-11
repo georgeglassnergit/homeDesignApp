@@ -16,7 +16,9 @@
 //   • Walls are drawn as their true-thickness plan footprint (the mitred quad from wallJoin,
 //     REUSED so the 2D plan and the 3D view can't drift), as a closed polyline per wall.
 //   • Openings (doors/windows) are drawn as a rectangle marking the hole in the wall on their
-//     own layer — the drafter sees exactly where each door/window sits, to detail properly.
+//     own layer, PLUS the conventional plan symbol so each reads for what it is: a door gets its
+//     leaf drawn open 90° + a quarter-circle swing arc, a window gets a glazing centre-line
+//     (the same symbols the SVG plan draws, from the shared openingGlyph).
 //   • Rooms are drawn as a closed boundary polyline + a TEXT label (name + area) at the centroid.
 //   • Roofs and external-GLB furniture are 3D/asset concerns and are reported as a header note,
 //     not drawn into the 2D plan (same as OBJ's massing scope).
@@ -56,6 +58,12 @@ function tag(str, fallback = 'X') {
   return s || fallback;
 }
 
+// Angle (in degrees, DXF frame) of the ray from world point `c` to world point `p`. The DXF frame
+// is world {x,z} → {x,-z} (Y up), so the vertical component is negated. Used to place swing arcs.
+function dxfAngle(c, p) {
+  return Math.atan2(-(p.z - c.z), p.x - c.x) * 180 / Math.PI;
+}
+
 // ---- DXF writer ------------------------------------------------------------
 
 // A tiny group-code accumulator: `.pair(code, value)` pushes one code/value line pair, the unit
@@ -79,6 +87,14 @@ class DxfWriter {
     return this.pair(0, 'LINE').pair(8, layer)
       .pair(10, fmt(a.x)).pair(20, fmt(-a.z)).pair(30, '0')
       .pair(11, fmt(b.x)).pair(21, fmt(-b.z)).pair(31, '0');
+  }
+  // A circular ARC on `layer`, centre `c` {x,z} (world), radius `r`, swept CCW from `startDeg`
+  // to `endDeg`. DXF arcs are always counter-clockwise and measured in the DXF frame — the caller
+  // computes the angles in that frame (world {x,z} → DXF {x,-z}). R12 universally accepts ARC.
+  arc(layer, c, r, startDeg, endDeg) {
+    return this.pair(0, 'ARC').pair(8, layer)
+      .pair(10, fmt(c.x)).pair(20, fmt(-c.z)).pair(30, '0')
+      .pair(40, fmt(r)).pair(50, fmt(startDeg)).pair(51, fmt(endDeg));
   }
   text(layer, at, height, str) {
     const s = dxfText(str);
@@ -111,6 +127,33 @@ export function openingRect(wall, opening) {
   return [at(o0, -h), at(o1, -h), at(o1, h), at(o0, h)];
 }
 
+// Plan-drawing SYMBOL geometry for one opening, in world {x,z} — the conventional mark that lets a
+// door read as a door and a window as a window on a 2D plan (the punched rectangle alone is
+// ambiguous: a door and a window look identical). REUSES the exact openingRect math (same along/
+// across unit vectors, same clamp) so the symbol can never drift from the hole it annotates. This
+// is the single source of truth shared by the DXF (exportDxf.js) and the SVG (exportSvg.js) plans.
+//   • door  → the leaf drawn open 90° (hinge at the near jamb, swinging to the wall's left normal)
+//             plus a quarter-circle swing arc from the open leaf tip round to the far jamb.
+//   • window → a glazing centre-line running down the middle of the opening.
+// Hinge side / swing direction aren't in the model, so a single consistent convention is used
+// (hinge at the opening's near edge, swing to the wall's left normal). Returns null for a
+// degenerate (zero-length wall or zero-width) opening, so the caller just draws the gap/rectangle.
+export function openingGlyph(wall, opening) {
+  const len = wallLength(wall);
+  if (!(len > 1e-9)) return null;
+  const dx = (wall.b.x - wall.a.x) / len, dz = (wall.b.z - wall.a.z) / len;  // unit along wall
+  const nx = -dz, nz = dx;                                                    // unit across (left normal)
+  const o0 = Math.max(0, Math.min(len, opening.offset));                      // near edge, clamped
+  const o1 = Math.max(0, Math.min(len, opening.offset + opening.width));      // far edge, clamped
+  const w = o1 - o0;
+  if (!(w > 1e-6)) return null;
+  const ctr = (o) => ({ x: wall.a.x + dx * o, z: wall.a.z + dz * o });        // a wall-centreline point
+  const near = ctr(o0), far = ctr(o1);
+  if (opening.kind === 'window') return { kind: 'window', glass: [near, far] };
+  // door: hinge at the near jamb; the leaf is open perpendicular to the wall (into the +n side).
+  return { kind: 'door', hinge: near, tip: { x: near.x + nx * w, z: near.z + nz * w }, latch: far, radius: w };
+}
+
 // Export the whole project as a DXF R12 drawing. Pure: returns a string + counts/warnings and
 // never touches the model. opts.units (UNIT.METRIC|IMPERIAL) only affects the area label text.
 export function exportDxf(project, opts = {}) {
@@ -141,13 +184,33 @@ export function exportDxf(project, opts = {}) {
       if (quad && quad.length === 4) { entities.polyline(use(LW), quad, true); wallCount++; }
     }
 
-    // Openings: a rectangle marking each hole, on the openings layer.
+    // Openings: a rectangle marking each hole, PLUS the conventional plan symbol so a door reads
+    // as a door and a window as a window (the rectangle alone is ambiguous) — the leaf + swing arc
+    // for a door, a glazing centre-line for a window. All on the openings layer, reusing the shared
+    // openingGlyph so the DXF and SVG plans draw the identical mark.
     const wallById = new Map(walls.map((w) => [w.id, w]));
     for (const op of (Array.isArray(lvl.openings) ? lvl.openings : [])) {
       const w = wallById.get(op.wallId);
       if (!w) continue;
       const rect = openingRect(w, op);
-      if (rect.length === 4) { entities.polyline(use(LO), rect, true); openingCount++; }
+      if (rect.length !== 4) continue;
+      entities.polyline(use(LO), rect, true);
+      openingCount++;
+      const gl = openingGlyph(w, op);
+      if (!gl) continue;                                   // degenerate opening → rectangle only
+      if (gl.kind === 'door') {
+        entities.line(LO, gl.hinge, gl.tip);               // the open door leaf
+        // quarter-circle swing arc from the open leaf tip round to the far jamb. DXF arcs sweep
+        // CCW; pick the start/end ordering whose CCW span is the 90° minor arc (never the 270°
+        // complement), so the arc bulges into the room on the leaf side — matching the SVG plan.
+        const aTip = dxfAngle(gl.hinge, gl.tip);
+        const aLatch = dxfAngle(gl.hinge, gl.latch);
+        const span = (((aTip - aLatch) % 360) + 360) % 360;  // CCW degrees from latch → tip
+        if (span <= 180) entities.arc(LO, gl.hinge, gl.radius, aLatch, aTip);
+        else entities.arc(LO, gl.hinge, gl.radius, aTip, aLatch);
+      } else {
+        entities.line(LO, gl.glass[0], gl.glass[1]);       // the glazing centre-line (a window pane)
+      }
     }
 
     // Rooms: boundary polyline + centroid label (name + area).
@@ -194,7 +257,7 @@ export function exportDxf(project, opts = {}) {
   doc.pair(0, 'EOF');
 
   const warnings = [];
-  if (openingCount) warnings.push(`${openingCount} opening(s) drawn as plan rectangles (a 2D plan marks the hole; the swing/leaf is left for the drafter)`);
+  if (openingCount) warnings.push(`${openingCount} opening(s) drawn as plan rectangles with symbols (doors get a leaf + swing arc, windows a glazing line)`);
   if (roofCount) warnings.push(`${roofCount} roof(s) not drawn (3D shell — a 2D plan shows the walls beneath)`);
   if (furnitureCount) warnings.push(`${furnitureCount} furniture item(s) not drawn (external 3D assets)`);
 
