@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="827" height="728" viewBox="0 0 827 728">
+<rect width="100%" height="100%" fill="#fbf8f2"/>
+<text x="14" y="22" font-family="monospace" font-size="13" fill="#5a4c3e">DXF R12 export — door &amp; window plan symbols (5 walls · 4 openings · 2 rooms)</text>
+<text x="14" y="40" font-family="monospace" font-size="11" fill="#9a8c7a">rendered from the emitted DXF entities — blue = opening rect · doors: leaf + 90° swing arc · windows: dashed glazing line</text>
+<polygon points="48.0,129.6 768.0,129.6 778.8,140.4 58.8,140.4" fill="#33333322" stroke="#333" stroke-width="1.5"/>
+<polygon points="778.8,140.4 778.8,669.6 768.0,680.4 768.0,129.6" fill="#33333322" stroke="#333" stroke-width="1.5"/>
+<polygon points="768.0,680.4 58.8,680.4 48.0,669.6 778.8,669.6" fill="#33333322" stroke="#333" stroke-width="1.5"/>
+<polygon points="48.0,669.6 48.0,129.6 58.8,140.4 58.8,680.4" fill="#33333322" stroke="#333" stroke-width="1.5"/>
+<polygon points="418.8,135.0 418.8,675.0 408.0,675.0 408.0,135.0" fill="#33333322" stroke="#333" stroke-width="1.5"/>
+<polygon points="323.4,129.6 404.4,129.6 404.4,140.4 323.4,140.4" fill="#fbf8f2" stroke="#2f6f9f" stroke-width="1.5"/>
+<polygon points="778.8,315.0 778.8,441.0 768.0,441.0 768.0,315.0" fill="#fbf8f2" stroke="#2f6f9f" stroke-width="1.5"/>
+<polygon points="503.4,680.4 377.4,680.4 377.4,669.6 503.4,669.6" fill="#fbf8f2" stroke="#2f6f9f" stroke-width="1.5"/>
+<polygon points="418.8,450.0 418.8,531.0 408.0,531.0 408.0,450.0" fill="#fbf8f2" stroke="#2f6f9f" stroke-width="1.5"/>
+<line x1="773.4" y1="315.0" x2="773.4" y2="441.0" stroke="#2f6f9f" stroke-width="2.5" stroke-dasharray="5 3"/>
+<line x1="503.4" y1="675.0" x2="377.4" y2="675.0" stroke="#2f6f9f" stroke-width="2.5" stroke-dasharray="5 3"/>
+<line x1="323.4" y1="135.0" x2="323.4" y2="216.0" stroke="#b5651d" stroke-width="2.5"/>
+<line x1="413.4" y1="450.0" x2="332.4" y2="450.0" stroke="#b5651d" stroke-width="2.5"/>
+<path d="M 323.4 216.0 A 81.0 81.0 0 0 0 404.4 135.0" fill="none" stroke="#b5651d" stroke-width="2" stroke-dasharray="3 2"/>
+<path d="M 332.4 450.0 A 81.0 81.0 0 0 0 413.4 531.0" fill="none" stroke="#b5651d" stroke-width="2" stroke-dasharray="3 2"/>
+</svg>

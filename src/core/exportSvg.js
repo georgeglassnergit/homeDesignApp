@@ -34,9 +34,9 @@
 // without a browser or renderer.
 
 import { joinWalls } from './wallJoin.js';
-import { polygonArea, polygonCentroid, wallLength } from './model.js';
+import { polygonArea, polygonCentroid } from './model.js';
 import { UNIT, formatArea, formatLength } from './units.js';
-import { openingRect } from './exportDxf.js';
+import { openingRect, openingGlyph } from './exportDxf.js';
 
 // ---- formatting / escaping -------------------------------------------------
 
@@ -71,31 +71,9 @@ const STYLE = Object.freeze({
 
 // ---- geometry gathering ----------------------------------------------------
 
-// Plan-drawing symbol geometry for one opening, in world {x,z} — the conventional mark that lets a
-// door read as a door and a window as a window on the 2D plan (the punched gap alone is ambiguous:
-// a door and a window look identical). REUSES the exact openingRect math (same along/across unit
-// vectors, same clamp) so the symbol can never drift from the gap it annotates.
-//   • door  → the leaf drawn open 90° (hinge at the near jamb, swinging to the wall's left side)
-//             plus a quarter-circle swing arc from the open leaf tip round to the far jamb.
-//   • window → a glazing centre-line running down the middle of the opening.
-// Hinge side / swing direction aren't in the model, so a single consistent convention is used
-// (hinge at the opening's near edge, swing to the wall's left normal). Returns null for a
-// degenerate (zero-length wall or zero-width) opening, so the caller just draws the gap.
-export function openingGlyph(wall, opening) {
-  const len = wallLength(wall);
-  if (!(len > 1e-9)) return null;
-  const dx = (wall.b.x - wall.a.x) / len, dz = (wall.b.z - wall.a.z) / len;  // unit along wall
-  const nx = -dz, nz = dx;                                                    // unit across (left normal)
-  const o0 = Math.max(0, Math.min(len, opening.offset));                      // near edge, clamped
-  const o1 = Math.max(0, Math.min(len, opening.offset + opening.width));      // far edge, clamped
-  const w = o1 - o0;
-  if (!(w > 1e-6)) return null;
-  const ctr = (o) => ({ x: wall.a.x + dx * o, z: wall.a.z + dz * o });        // a wall-centreline point
-  const near = ctr(o0), far = ctr(o1);
-  if (opening.kind === 'window') return { kind: 'window', glass: [near, far] };
-  // door: hinge at the near jamb; the leaf is open perpendicular to the wall (into the +n side).
-  return { kind: 'door', hinge: near, tip: { x: near.x + nx * w, z: near.z + nz * w }, latch: far, radius: w };
-}
+// The plan SYMBOL geometry for an opening (door leaf + swing arc / window glazing line) now lives
+// in exportDxf.js next to openingRect, as the single source of truth both 2D plans share — so the
+// SVG picture and the DXF CAD plan draw the identical mark and can never drift. Imported above.
 
 // Pull the drawable plan geometry out of one level, in world {x,z}. No rendering yet — this is the
 // pure model→geometry step the tests assert against, kept separate from the SVG string building.
