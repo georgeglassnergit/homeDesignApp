@@ -18,7 +18,9 @@
 //     solid "poché" the way a real floor plan reads.
 //   • Openings (doors/windows) are drawn as a gap punched through the wall poché — REUSING the
 //     exact same `openingRect` the DXF export and the CSG cut use — so a door/window reads as an
-//     opening in the wall, not a separate box.
+//     opening in the wall, not a separate box. On top of the gap each opening gets its conventional
+//     plan SYMBOL so a door reads as a door and a window as a window (a bare gap is ambiguous): a
+//     door shows its leaf open 90° + a swing arc; a window shows a glazing centre-line.
 //   • Rooms are drawn as a filled boundary + a centroid label (name + area).
 //   • Multiple storeys are laid out side by side, each under its own title, at one shared scale.
 //   • Roofs and external-GLB furniture are 3D/asset concerns and are reported as a header note,
@@ -32,7 +34,7 @@
 // without a browser or renderer.
 
 import { joinWalls } from './wallJoin.js';
-import { polygonArea, polygonCentroid } from './model.js';
+import { polygonArea, polygonCentroid, wallLength } from './model.js';
 import { UNIT, formatArea, formatLength } from './units.js';
 import { openingRect } from './exportDxf.js';
 
@@ -69,6 +71,32 @@ const STYLE = Object.freeze({
 
 // ---- geometry gathering ----------------------------------------------------
 
+// Plan-drawing symbol geometry for one opening, in world {x,z} — the conventional mark that lets a
+// door read as a door and a window as a window on the 2D plan (the punched gap alone is ambiguous:
+// a door and a window look identical). REUSES the exact openingRect math (same along/across unit
+// vectors, same clamp) so the symbol can never drift from the gap it annotates.
+//   • door  → the leaf drawn open 90° (hinge at the near jamb, swinging to the wall's left side)
+//             plus a quarter-circle swing arc from the open leaf tip round to the far jamb.
+//   • window → a glazing centre-line running down the middle of the opening.
+// Hinge side / swing direction aren't in the model, so a single consistent convention is used
+// (hinge at the opening's near edge, swing to the wall's left normal). Returns null for a
+// degenerate (zero-length wall or zero-width) opening, so the caller just draws the gap.
+export function openingGlyph(wall, opening) {
+  const len = wallLength(wall);
+  if (!(len > 1e-9)) return null;
+  const dx = (wall.b.x - wall.a.x) / len, dz = (wall.b.z - wall.a.z) / len;  // unit along wall
+  const nx = -dz, nz = dx;                                                    // unit across (left normal)
+  const o0 = Math.max(0, Math.min(len, opening.offset));                      // near edge, clamped
+  const o1 = Math.max(0, Math.min(len, opening.offset + opening.width));      // far edge, clamped
+  const w = o1 - o0;
+  if (!(w > 1e-6)) return null;
+  const ctr = (o) => ({ x: wall.a.x + dx * o, z: wall.a.z + dz * o });        // a wall-centreline point
+  const near = ctr(o0), far = ctr(o1);
+  if (opening.kind === 'window') return { kind: 'window', glass: [near, far] };
+  // door: hinge at the near jamb; the leaf is open perpendicular to the wall (into the +n side).
+  return { kind: 'door', hinge: near, tip: { x: near.x + nx * w, z: near.z + nz * w }, latch: far, radius: w };
+}
+
 // Pull the drawable plan geometry out of one level, in world {x,z}. No rendering yet — this is the
 // pure model→geometry step the tests assert against, kept separate from the SVG string building.
 function gatherLevel(lvl) {
@@ -82,12 +110,13 @@ function gatherLevel(lvl) {
   }
 
   const wallById = new Map(walls.map((w) => [w.id, w]));
-  const openingRects = [];
+  const openings = [];
   for (const op of (Array.isArray(lvl && lvl.openings) ? lvl.openings : [])) {
     const w = wallById.get(op.wallId);
     if (!w) continue;
     const rect = openingRect(w, op);
-    if (rect.length === 4) openingRects.push(rect);
+    if (rect.length !== 4) continue;                    // orphan/degenerate → skipped (counts stay honest)
+    openings.push({ rect, glyph: openingGlyph(w, op) });
   }
 
   const rooms = [];
@@ -102,7 +131,7 @@ function gatherLevel(lvl) {
     });
   }
 
-  return { wallQuads, openingRects, rooms };
+  return { wallQuads, openings, rooms };
 }
 
 // Grow a mutable bbox {minX,minZ,maxX,maxZ} by one finite point.
@@ -118,7 +147,10 @@ function grow(box, p) {
 function levelBox(g) {
   const box = { minX: Infinity, minZ: Infinity, maxX: -Infinity, maxZ: -Infinity };
   for (const q of g.wallQuads) for (const p of q) grow(box, p);
-  for (const r of g.openingRects) for (const p of r) grow(box, p);
+  for (const op of g.openings) {
+    for (const p of op.rect) grow(box, p);
+    if (op.glyph && op.glyph.kind === 'door') grow(box, op.glyph.tip);   // the leaf swings into the room
+  }
   for (const room of g.rooms) for (const p of room.points) grow(box, p);
   if (!Number.isFinite(box.minX)) return null;
   return box;
@@ -151,7 +183,7 @@ export function exportSvg(project, opts = {}) {
   levels.forEach((lvl, li) => {
     const g = gatherLevel(lvl);
     wallCount += g.wallQuads.length;
-    openingCount += g.openingRects.length;
+    openingCount += g.openings.length;
     roomCount += g.rooms.length;
     if (lvl && lvl.roof) roofCount++;
     const box = levelBox(g);
@@ -182,10 +214,25 @@ export function exportSvg(project, opts = {}) {
     for (const q of g.wallQuads) {
       g_.push(`<polygon points="${polyPoints(q, ox, oz, scale)}" fill="${STYLE.wall}" stroke="${STYLE.wall}" stroke-width="0.5"/>`);
     }
-    // 4) opening gaps: fill with the page colour to "erase" the wall, thin accent outline so the
-    //    door/window is legible even against the room fill.
-    for (const rect of g.openingRects) {
-      g_.push(`<polygon points="${polyPoints(rect, ox, oz, scale)}" fill="${STYLE.page}" stroke="${STYLE.opening}" stroke-width="1"/>`);
+    // 4) openings: erase the wall with a page-coloured gap (thin accent outline so it reads against
+    //    the room fill), then draw the conventional plan SYMBOL so a door reads as a door and a
+    //    window as a window — the gap alone is ambiguous. Door: open leaf + 90° swing arc. Window:
+    //    a glazing centre-line. All in the opening accent, reusing the same scale/offset mapping.
+    const sx = (p) => fmt((p.x - ox) * scale), sz = (p) => fmt((p.z - oz) * scale);
+    const accentLine = (a, b, w) => `<line x1="${sx(a)}" y1="${sz(a)}" x2="${sx(b)}" y2="${sz(b)}" stroke="${STYLE.opening}" stroke-width="${w}"/>`;
+    for (const op of g.openings) {
+      g_.push(`<polygon points="${polyPoints(op.rect, ox, oz, scale)}" fill="${STYLE.page}" stroke="${STYLE.opening}" stroke-width="1"/>`);
+      const gl = op.glyph;
+      if (!gl) continue;                                     // degenerate opening → gap only
+      if (gl.kind === 'door') {
+        const r = fmt(gl.radius * scale);
+        g_.push(accentLine(gl.hinge, gl.tip, 1));            // the open door leaf
+        // quarter-circle swing arc from the open leaf tip round to the far jamb (sweep-flag 0 keeps
+        // the arc bulging into the room, on the leaf side, rather than back through the wall).
+        g_.push(`<path d="M ${sx(gl.tip)} ${sz(gl.tip)} A ${r} ${r} 0 0 0 ${sx(gl.latch)} ${sz(gl.latch)}" fill="none" stroke="${STYLE.opening}" stroke-width="1"/>`);
+      } else {
+        g_.push(accentLine(gl.glass[0], gl.glass[1], 1.5));  // the glazing line (reads as a window pane)
+      }
     }
     // 5) room labels (name + area) at the centroid.
     for (const room of g.rooms) {
