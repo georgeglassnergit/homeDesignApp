@@ -5,6 +5,8 @@
 // one thing a real home designer reaches for that none of them give: a flat,
 // spreadsheet-shaped SCHEDULE of the design —
 //   • a room schedule  (level · name · floor area · perimeter · finish)
+//   • a floor-finish schedule (room floor areas rolled up by finish → the flooring
+//     take-off a supplier orders from: "Oak — 42 m² across 3 rooms")
 //   • an opening schedule (level · mark · door/window · host wall · size · sill)
 //   • an opening-TYPE schedule (the tagged door/window schedule a supplier orders from:
 //     identical openings — same kind + size + sill — roll up to one marked type D1…/W1…
@@ -13,8 +15,8 @@
 //     openings deducted → the net area a paint/plaster/cladding estimate wants)
 //   • a furniture (FF&E) schedule (level · item · quantity), grouped so identical
 //     placed objects roll up to a count — the inventory a furnished design wants
-//   • a summary (storeys, GFA, room/door/window/type/furniture counts, running wall length, net area)
-// and a CSV rendering of all six sections that opens in Excel / Numbers / Sheets / LibreCAD.
+//   • a summary (storeys, GFA, room/door/window/type/finish/furniture counts, running wall length, net area)
+// and a CSV rendering of all seven sections that opens in Excel / Numbers / Sheets / LibreCAD.
 //
 // ── HONESTY (constraint #6 in docs/PHASE-3-PLAN.md) ──────────────────────────
 // This is a DESIGN / VISUALISATION tool, NOT a quantity surveyor. These numbers
@@ -31,7 +33,7 @@
 // It imports only pure model helpers; there is no Three.js here.
 // ============================================================================
 
-import { wallLength, polygonArea, polygonPerimeter } from './model.js';
+import { wallLength, polygonArea, polygonPerimeter, materialDef } from './model.js';
 
 // The label every consumer must show near a schedule. Plain-language, not legalese.
 export const SCHEDULE_DISCLAIMER =
@@ -42,6 +44,18 @@ export const SCHEDULE_DISCLAIMER =
 const round2 = (n) => (Number.isFinite(n) ? Math.round(n * 100) / 100 : 0);
 const num = (n) => (Number.isFinite(n) ? n : 0);
 
+// Human label for a room's floor-finish `material` id, for the finish take-off. A curated
+// library finish (model.js MATERIAL_LIBRARY) resolves to its catalog label; a base/default
+// id (e.g. the 'floor' default) falls back to its id title-cased; a blank/absent finish reads
+// as an explicit "(unspecified)" bucket so an unfinished room is still counted, never dropped.
+function finishLabel(id) {
+  if (id == null || id === '') return '(unspecified)';
+  const def = materialDef(id);
+  if (def && def.label) return def.label;
+  const s = String(id);
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
 // A level's display name, tolerant of a bare/partial level object.
 function levelName(level, index) {
   return (level && (level.name || level.id)) || `Level ${index + 1}`;
@@ -49,7 +63,7 @@ function levelName(level, index) {
 
 // ── the schedule as structured data ─────────────────────────────────────────
 //
-// buildSchedule(project) → { project, rooms[], openings[], wallsByLevel[], furniture[], summary }
+// buildSchedule(project) → { project, rooms[], openings[], openingTypes[], finishes[], wallsByLevel[], furniture[], summary }
 // Every measurement is in the model's native units (metres / m²). Per-row values are
 // rounded to 2 dp for presentation; summary totals sum the RAW values first, then round
 // once — so a total never drifts from re-rounding its parts.
@@ -63,6 +77,14 @@ export function buildSchedule(project) {
   // raw running totals (round only at the end)
   let totFloor = 0, totWallLen = 0, totGross = 0, totOpening = 0;
   let nRooms = 0, nWalls = 0, nDoors = 0, nWindows = 0;
+
+  // project-wide FLOOR-FINISH take-off: every room's floor area rolls up by its finish
+  // (room.material), so identical finishes across rooms/storeys sum to one line — the flooring
+  // quantity a supplier orders from ("Oak: 42 m² across 3 rooms"), mirroring the opening/furniture
+  // roll-ups. A finish line is created the first time its id is seen, in model order; area sums RAW
+  // and is rounded once at the end (no re-rounding drift against the per-room rounded areas).
+  const finishGroups = new Map();  // material id ('' = unspecified) → { finish, label, area, rooms, seq }
+  let finishSeq = 0;
 
   // project-wide door/window TYPE marks (D1…/W1…): identical openings — same kind + size + sill —
   // roll up to one tagged, counted type, the door/window schedule an estimator or supplier orders
@@ -90,13 +112,22 @@ export function buildSchedule(project) {
       const per = polygonPerimeter(r.points);
       totFloor += area;
       nRooms++;
+      const finishId = r.material || '';
       rooms.push({
         level: name,
         name: r.name || 'Room',
         area: round2(area),
         perimeter: round2(per),
-        material: r.material || '',
+        material: finishId,
       });
+      // roll this room's floor area into its finish line (first-seen order, raw-summed area)
+      let fg = finishGroups.get(finishId);
+      if (!fg) {
+        fg = { finish: finishId, label: finishLabel(finishId), area: 0, rooms: 0, seq: finishSeq++ };
+        finishGroups.set(finishId, fg);
+      }
+      fg.area += area;
+      fg.rooms++;
     }
 
     // openings + this level's opening-area deduction
@@ -187,6 +218,12 @@ export function buildSchedule(project) {
     .sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'door' ? -1 : 1) || (a.seq - b.seq))
     .map(({ mark, kind, width, height, sill, count }) => ({ mark, kind, width, height, sill, count }));
 
+  // the floor-finish schedule: one line per distinct finish, in first-seen (model) order, each
+  // area summed RAW across its rooms then rounded once here.
+  const finishes = [...finishGroups.values()]
+    .sort((a, b) => a.seq - b.seq)
+    .map(({ finish, label, area, rooms }) => ({ finish, label, area: round2(area), rooms }));
+
   const summary = {
     levels: levels.length,
     rooms: nRooms,
@@ -195,6 +232,7 @@ export function buildSchedule(project) {
     openings: nDoors + nWindows,
     doorTypes: nDoorTypes,
     windowTypes: nWindowTypes,
+    finishes: finishGroups.size,
     walls: nWalls,
     furniture: nFurniture,
     floorArea: round2(totFloor),
@@ -210,6 +248,7 @@ export function buildSchedule(project) {
     rooms,
     openings,
     openingTypes,
+    finishes,
     wallsByLevel,
     furniture,
     summary,
@@ -228,8 +267,8 @@ export function csvField(v) {
 
 const row = (cells) => cells.map(csvField).join(',');
 
-// buildSchedule result → a single sectioned CSV string (Summary · Rooms · Openings ·
-// Opening types · Walls by level · Furniture). Sections are separated by a blank line and led by a title
+// buildSchedule result → a single sectioned CSV string (Summary · Rooms · Floor finishes ·
+// Openings · Opening types · Walls by level · Furniture). Sections are separated by a blank line and led by a title
 // cell so the one file opens cleanly in any spreadsheet. Line terminator is CRLF (Excel-friendly).
 export function scheduleToCsv(schedule) {
   const s = schedule && schedule.summary ? schedule : buildSchedule(schedule);
@@ -247,6 +286,7 @@ export function scheduleToCsv(schedule) {
   lines.push(row(['Windows', s.summary.windows, '']));
   lines.push(row(['Door types', s.summary.doorTypes || 0, '']));
   lines.push(row(['Window types', s.summary.windowTypes || 0, '']));
+  lines.push(row(['Floor finishes', s.summary.finishes || 0, '']));
   lines.push(row(['Walls', s.summary.walls, '']));
   lines.push(row(['Furniture', s.summary.furniture || 0, '']));
   lines.push(row(['Floor area (GFA)', s.summary.floorArea, 'm²']));
@@ -259,6 +299,12 @@ export function scheduleToCsv(schedule) {
   lines.push(row(['Rooms']));
   lines.push(row(['Level', 'Room', 'Floor area (m²)', 'Perimeter (m)', 'Finish']));
   for (const r of s.rooms) lines.push(row([r.level, r.name, r.area, r.perimeter, r.material]));
+  lines.push('');
+
+  // the floor-finish schedule proper — room floor areas rolled up by finish (the flooring take-off)
+  lines.push(row(['Floor finishes']));
+  lines.push(row(['Finish', 'Floor area (m²)', 'Rooms']));
+  for (const f of (s.finishes || [])) lines.push(row([f.label, f.area, f.rooms]));
   lines.push('');
 
   lines.push(row(['Openings']));
