@@ -1071,6 +1071,16 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
         // meshes to match the model; awaited here so the confirmation below is truthful).
         await reconcileFurniture();
         refresh();
+        // Frame the orbit camera on the piece the user just added so it's immediately visible —
+        // a generated model drops at the plan-viewport centre, which can be off-screen or tiny in
+        // the current 3D view. View-only (no command, no model mutation; Undo still just drops the
+        // record). Skip in walk mode so we never yank a first-person user off their feet.
+        if (app.camera === CAMERA.ORBIT) {
+          const mesh = home.children.find(
+            (c) => c.userData && c.userData.kind === 'furniture' && c.userData.modelId === res.furniture.id,
+          );
+          if (mesh) viewer.frameObject(mesh);
+        }
         hint(`Added “${res.furniture.name}”. Undo to remove it.`);
         return { ok: true, furniture: res.furniture, jobId: res.jobId };
       } catch (err) {
@@ -1542,6 +1552,18 @@ const hint = (t) => { const h = $('toolhint'); if (h) h.textContent = t; };
       __furnishBtnLabel: () => (furnishBtn ? furnishBtn.textContent : null),
       __furnishFromPhoto: (dataUrl, opts) => runFurnishFromDataUrl(dataUrl, opts || {}),
       __furnishSceneCount: () => home.children.filter((c) => c.userData && c.userData.kind === 'furniture').length,
+      // Orbit camera state + the world-space centre of the last-added furniture mesh, so the
+      // harness can prove a furnish commit frames the camera onto the new piece (view-only).
+      __cameraState: () => ({
+        pos: [viewer.camera.position.x, viewer.camera.position.y, viewer.camera.position.z],
+        target: [viewer.controls.target.x, viewer.controls.target.y, viewer.controls.target.z],
+      }),
+      __furnishLastCenter: () => {
+        const ms = home.children.filter((c) => c.userData && c.userData.kind === 'furniture');
+        const m = ms[ms.length - 1];
+        const b = m ? viewer.objectBox(m) : null;
+        return b ? b.center : null;
+      },
     });
     window.__selftest = () => { const j = serialize(project); const p = deserialize(j); return { valid: validateProject(p).ok, lossless: serialize(p) === j, counts: projectCounts(p) }; };
   } catch (e) {
