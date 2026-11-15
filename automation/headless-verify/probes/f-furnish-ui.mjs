@@ -55,6 +55,10 @@ export async function run(page) {
     };
   });
 
+  // capture the orbit target BEFORE the furnish (boot framing = whole-home centre) so we can prove
+  // the commit reframes the camera onto the newly-added piece.
+  const camBefore = await page.evaluate(() => window.__cameraState().target);
+
   // 4) drive the REAL file input with a synthetic PNG; the change handler runs the production flow.
   await page.setInputFiles('#furnish-file', {
     name: 'chair.png', mimeType: 'image/png', buffer: Buffer.from(RED_PNG_B64, 'base64'),
@@ -71,8 +75,15 @@ export async function run(page) {
       modelSrc: added.src, modelName: added.name,
       undo: window.__history.undoStack.length, label: window.__furnishBtnLabel(),
       lossless: window.__selftest().lossless,
+      camTarget: window.__cameraState().target,     // orbit target after the furnish
+      pieceCenter: window.__furnishLastCenter(),     // world-space centre of the new mesh
     };
   });
+  // the commit frames the orbit camera onto the new piece: target moved off the boot framing AND
+  // now sits at the piece's world-space box centre (frame() copies the box centre into the target).
+  const dist = (a, b) => (a && b) ? Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) : Infinity;
+  const camMoved = dist(afterAdd.camTarget, camBefore) > 0.1;
+  const camOnPiece = dist(afterAdd.camTarget, afterAdd.pieceCenter) < 1e-3;
 
   // 5) furniture is a pure function of the model — Undo drops record + mesh; Redo restores both.
   //    Drive the real toolbar Undo/Redo buttons (history.undo/redo + refresh → reconcileFurniture).
@@ -94,10 +105,12 @@ export async function run(page) {
 
   return {
     log: {
-      seam, afterAdd, afterUndo, afterRedo,
+      seam, afterAdd, afterUndo, afterRedo, camBefore, camMoved, camOnPiece,
       badCode: bad.res && bad.res.code, badOk: bad.res && bad.res.ok,
     },
     checks: [
+      ['F: the furnish frames the orbit camera onto the new piece (target leaves boot framing)', camMoved === true],
+      ['F: the camera target lands on the new piece’s world-space centre', camOnPiece === true],
       ['F: "Furnish photo…" seam present in Simple', seam.visible === true],
       ['F: button starts idle (label "Furnish photo…", not busy)', /Furnish/.test(seam.label || '') && seam.busy === false],
       ['F: the scene mirrors the model at boot (furniture is a pure fn of it)', seam.scene === seam.model],

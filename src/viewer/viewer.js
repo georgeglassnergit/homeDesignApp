@@ -40,6 +40,30 @@ export function createViewer(container) {
     controls.update();
   }
 
+  // World-space AABB of any Object3D already added to the scene (bakes in each mesh's own
+  // transform). Returns null for an empty/degenerate object so callers can no-op safely.
+  function objectBox(object3d) {
+    if (!object3d) return null;
+    const box = new THREE.Box3().setFromObject(object3d);
+    if (box.isEmpty()) return null;
+    const size = new THREE.Vector3(); box.getSize(size);
+    const center = new THREE.Vector3(); box.getCenter(center);
+    const maxDim = Math.max(size.x, size.y, size.z);
+    if (!(maxDim > 0) || !isFinite(maxDim)) return null;
+    return { box, center: center.toArray(), size: size.toArray(), maxDim };
+  }
+
+  // Frame the orbit camera on a single object (e.g. a newly-added furniture piece) with enough
+  // pull-back (`dist`) that the surrounding room stays in view. A larger default than `frame`'s
+  // whole-home fit: the point is "here's the thing you just added, in context", not fill-the-frame.
+  // Returns false (no camera move) for a degenerate object. View-only — issues no command.
+  function frameObject(object3d, dist = 2.4) {
+    const b = objectBox(object3d);
+    if (!b) return false;
+    frame(b.box, dist);
+    return true;
+  }
+
   addEventListener('resize', () => {
     camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
     renderer.setSize(innerWidth, innerHeight);
@@ -62,5 +86,5 @@ export function createViewer(container) {
   }
   function stop() { cancelAnimationFrame(raf); }
 
-  return { renderer, scene, camera, controls, frame, start, stop, onFrame };
+  return { renderer, scene, camera, controls, frame, frameObject, objectBox, start, stop, onFrame };
 }
