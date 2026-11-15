@@ -243,6 +243,69 @@ function typedProject() {
   ok(near(s.summary.totalWallLength, 18), 'wall length summed across storeys (9+9)');
 })();
 
+// ===== floor-finish schedule (room areas rolled up by finish) =====
+// A finished two-storey home: three rooms share 'oak', one is 'slate', one has a blank finish.
+//   Ground: Living 4×3=12 (oak) · Kitchen 2×3=6 (oak) · Bath 2×2=4 (slate)
+//   Upper:  Bedroom 5×4=20 (oak) · Study 3×3=9 (blank → "(unspecified)")
+// → oak 38 m²/3 rooms, slate 4 m²/1, (unspecified) 9 m²/1, in first-seen order.
+function finishedRoomsProject() {
+  _resetIds();
+  const rect = (w, d) => [{ x: 0, z: 0 }, { x: w, z: 0 }, { x: w, z: d }, { x: 0, z: d }];
+  const ground = createLevel({ name: 'Ground', rooms: [
+    createRoom(rect(4, 3), { name: 'Living',  material: 'oak' }),
+    createRoom(rect(2, 3), { name: 'Kitchen', material: 'oak' }),
+    createRoom(rect(2, 2), { name: 'Bath',    material: 'slate' }),
+  ] });
+  const upper = createLevel({ name: 'Upper', rooms: [
+    createRoom(rect(5, 4), { name: 'Bedroom', material: 'oak' }),
+    // a raw room object with NO material field (as a hand-edited/older save can have) — exercises
+    // the "(unspecified)" bucket; createRoom would force the 'floor' default, so build it bare.
+    { name: 'Study', points: rect(3, 3) },
+  ] });
+  const p = createProject({ name: 'Finished Home', levels: [ground, upper] });
+  stackElevations(p.levels);
+  return p;
+}
+(() => {
+  const s = buildSchedule(finishedRoomsProject());
+  ok(Array.isArray(s.finishes), 'schedule exposes a finishes[] roll-up');
+  ok(s.finishes.length === 3, 'three distinct finishes (oak, slate, unspecified)');
+  ok(s.summary.finishes === 3, 'summary counts the distinct finishes');
+  // first-seen (model) order: oak, then slate, then the blank-finish bucket
+  ok(s.finishes.map((f) => f.finish).join(',') === 'oak,slate,', 'finishes in first-seen model order (oak, slate, blank)');
+  const oak = s.finishes[0], slate = s.finishes[1], unspec = s.finishes[2];
+  // roll-up: identical finish across rooms AND storeys sums to one line
+  ok(oak.finish === 'oak' && oak.rooms === 3 && near(oak.area, 38), 'oak rolls up 3 rooms across both storeys → 38 m²');
+  ok(slate.finish === 'slate' && slate.rooms === 1 && near(slate.area, 4), 'slate = 1 room, 4 m²');
+  ok(unspec.finish === '' && unspec.rooms === 1 && near(unspec.area, 9), 'blank finish counted as its own bucket (never dropped), 9 m²');
+  // human labels: a library finish resolves to its catalog label; a blank reads "(unspecified)"
+  ok(oak.label === 'Oak' && slate.label === 'Slate', 'library finishes resolve to catalog labels');
+  ok(unspec.label === '(unspecified)', 'blank finish labelled "(unspecified)"');
+  // a base/default material id title-cases (the default room finish is 'floor')
+  const def = buildSchedule(sampleProject());
+  ok(def.finishes.length === 1 && def.finishes[0].finish === 'floor' && def.finishes[0].label === 'Floor', 'default "floor" finish title-cased to "Floor"');
+  ok(near(def.finishes[0].area, 12) && def.finishes[0].rooms === 1, 'single default-finish room rolls up correctly');
+  // the finish areas reconcile to the whole-home GFA (nothing double-counted or dropped)
+  const finishTotal = s.finishes.reduce((t, f) => t + f.area, 0);
+  ok(near(finishTotal, s.summary.floorArea), 'finish areas sum back to the GFA (38+4+9 = 51)');
+  ok(near(s.summary.floorArea, 51), 'GFA across both storeys = 51 m²');
+  // empty / degenerate inputs never throw and give an empty roll-up
+  ok(buildSchedule({ name: 'Empty', levels: [] }).finishes.length === 0, 'no rooms → empty finishes[]');
+  ok(buildSchedule({}).finishes.length === 0, 'degenerate project → empty finishes[], no throw');
+})();
+
+// ===== finish schedule renders into the CSV =====
+(() => {
+  const csv = scheduleToCsv(finishedRoomsProject());
+  ok(csv.includes('Floor finishes'), 'CSV has the "Floor finishes" section (title + summary row)');
+  ok(csv.includes('Finish,Floor area (m²),Rooms'), 'floor-finish header columns present');
+  ok(csv.includes('Oak,38,3'), 'rolled-up oak finish row rendered (label, area, room count)');
+  ok(csv.includes('Slate,4,1'), 'slate finish row rendered');
+  ok(csv.includes('(unspecified),9,1'), 'unfinished bucket rendered with its label');
+  // summary block carries the finish count line
+  ok(/\r\nFloor finishes,3,\r\n/.test(csv), 'summary block lists the floor-finish count');
+})();
+
 // ===== net area never negative (over-glazed model) =====
 (() => {
   _resetIds();
@@ -284,7 +347,7 @@ function typedProject() {
   ok(csv.includes('\r\n'), 'CSV uses CRLF line endings');
   ok(csv.endsWith('\r\n'), 'CSV ends with a terminator');
   ok(csv.includes(SCHEDULE_DISCLAIMER), 'CSV surfaces the advisory disclaimer');
-  for (const section of ['Summary', 'Rooms', 'Openings', 'Opening types', 'Walls by level', 'Furniture']) {
+  for (const section of ['Summary', 'Rooms', 'Floor finishes', 'Openings', 'Opening types', 'Walls by level', 'Furniture']) {
     ok(csv.includes(section), `CSV has the "${section}" section`);
   }
   ok(csv.includes('Floor area (m²),Perimeter (m),Finish'), 'room header columns present');
