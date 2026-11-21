@@ -10,7 +10,7 @@
 // It lives in its own file (pick-protocol §5) so it never collides with in-flight test work,
 // and re-asserts the Phase 1 save is never touched.
 import {
-  exportDxf, dxfBaseName, dxfText, openingRect,
+  exportDxf, dxfBaseName, dxfText, openingRect, openingGlyph,
 } from '../core/exportDxf.js';
 import { UNIT } from '../core/units.js';
 import {
@@ -77,6 +77,19 @@ function parseDxf(text) {
       cur.text = value;
     } else if (code === '40' && cur && cur.type === 'TEXT') {
       cur.height = parseFloat(value);
+    } else if (cur && cur.type === 'LINE') {
+      // LINE: start (10,20) → end (11,21), each mapped to {x,y} in the DXF frame.
+      if (code === '10') { cur.a = cur.a || {}; cur.a.x = parseFloat(value); }
+      else if (code === '20') { cur.a = cur.a || {}; cur.a.y = parseFloat(value); }
+      else if (code === '11') { cur.b = cur.b || {}; cur.b.x = parseFloat(value); }
+      else if (code === '21') { cur.b = cur.b || {}; cur.b.y = parseFloat(value); }
+    } else if (cur && cur.type === 'ARC') {
+      // ARC: centre (10,20), radius (40), start/end angle in degrees (50,51), swept CCW.
+      if (code === '10') cur.cx = parseFloat(value);
+      else if (code === '20') cur.cy = parseFloat(value);
+      else if (code === '40') cur.r = parseFloat(value);
+      else if (code === '50') cur.a0 = parseFloat(value);
+      else if (code === '51') cur.a1 = parseFloat(value);
     }
   }
   if (sectionDepth !== 0) errors.push('unbalanced SECTION/ENDSEC');
@@ -91,6 +104,10 @@ function findVersion(pairs) {
 }
 const polys = (p, layer) => p.entities.filter((e) => e.type === 'POLYLINE' && (!layer || e.layer === layer));
 const texts = (p, layer) => p.entities.filter((e) => e.type === 'TEXT' && (!layer || e.layer === layer));
+const lines = (p, layer) => p.entities.filter((e) => e.type === 'LINE' && (!layer || e.layer === layer));
+const arcs = (p, layer) => p.entities.filter((e) => e.type === 'ARC' && (!layer || e.layer === layer));
+// CCW angular span of a DXF arc, in degrees (0..360) — DXF arcs always sweep CCW from a0 to a1.
+const arcSpan = (e) => (((e.a1 - e.a0) % 360) + 360) % 360;
 
 // ---- 1) well-formed document from the sample home ---------------------------------------------
 {
@@ -247,6 +264,70 @@ const texts = (p, layer) => p.entities.filter((e) => e.type === 'TEXT' && (!laye
   ok(after === before, '11a exporting DXF leaves the project save byte-identical');
   ok(validateProject(deserialize(after)).ok, '11b the untouched save still validates');
   ok(!('dxf' in project), '11c no export field leaks into the model');
+}
+
+// ---- 12) opening SYMBOLS — doors get a leaf + swing arc, windows a glazing line ----------------
+// The rectangle alone can't tell a door from a window; the conventional plan symbol does. These
+// are drawn from the SHARED openingGlyph (same source as the SVG plan), on the openings layer.
+{
+  const near = (a, b, eps = 1e-6) => Math.abs(a - b) <= eps;
+  const arcPt = (e, deg) => ({ x: e.cx + e.r * Math.cos(deg * Math.PI / 180), y: e.cy + e.r * Math.sin(deg * Math.PI / 180) });
+  const matches = (pt, cands, eps = 1e-6) => cands.some((c) => near(pt.x, c.x, eps) && near(pt.y, c.y, eps));
+
+  // (A) the sample home: 2 doors + 2 windows → 4 leaf/glazing LINEs + 2 door-swing ARCs.
+  _resetIds();
+  const home = sampleHome();                 // south door, east window, north window, partition door
+  const ph = parseDxf(exportDxf(home).dxf);
+  const hLayer = [...ph.declaredLayers].find((l) => l.endsWith('-OPENINGS'));
+  ok(lines(ph, hLayer).length === 4, `12a 4 symbol lines on OPENINGS (2 door leaves + 2 glazing) (got ${lines(ph, hLayer).length})`);
+  ok(arcs(ph, hLayer).length === 2, `12b 2 door swing arcs on OPENINGS (got ${arcs(ph, hLayer).length})`);
+  ok(arcs(ph, hLayer).every((e) => near(arcSpan(e), 90, 1e-6)), '12c every swing arc is the 90° minor arc (not the 270° complement)');
+  ok(ph.errors.length === 0, `12d document still structurally valid with symbols (${ph.errors.join('; ') || 'ok'})`);
+  ok(polys(ph, hLayer).length === 4, '12e the 4 opening rectangles are still drawn alongside the symbols');
+
+  // (B) a single door, known geometry: leaf hinge→tip ⟂ wall, radius = width, arc ends at tip & latch.
+  _resetIds();
+  const dw = createWall({ x: 0, z: 0 }, { x: 4, z: 0 }, { thickness: 0.2 });
+  const door = createOpening(dw.id, 'door', { offset: 1, width: 0.9 });
+  const gl = openingGlyph(dw, door);
+  ok(gl && gl.kind === 'door' && near(gl.radius, 0.9), '12f openingGlyph(door) → kind door, radius = width');
+  ok(near(gl.hinge.x, 1) && near(gl.hinge.z, 0), '12g hinge at the near jamb (1,0)');
+  ok(near(gl.tip.x, 1) && near(gl.tip.z, 0.9), '12h leaf tip is ⟂ the wall, one width off (1,0.9)');
+  ok(near(gl.latch.x, 1.9) && near(gl.latch.z, 0), '12i latch at the far jamb (1.9,0)');
+  const pd = parseDxf(exportDxf(createProject({ levels: [createLevel({ walls: [dw], openings: [door] })] })).dxf);
+  const dLayer = [...pd.declaredLayers].find((l) => l.endsWith('-OPENINGS'));
+  ok(lines(pd, dLayer).length === 1 && arcs(pd, dLayer).length === 1, '12j a lone door → exactly 1 leaf line + 1 swing arc');
+  const leaf = lines(pd, dLayer)[0], arc = arcs(pd, dLayer)[0];
+  // DXF maps world {x,z}→{x,-z}: hinge(1,0)→(1,0), tip(1,0.9)→(1,-0.9), latch(1.9,0)→(1.9,0).
+  ok(matches(leaf.a, [{ x: 1, y: 0 }]) && matches(leaf.b, [{ x: 1, y: -0.9 }]), '12k leaf line runs hinge(1,0)→tip(1,-0.9) in the DXF frame');
+  ok(near(arc.cx, 1) && near(arc.cy, 0) && near(arc.r, 0.9), '12l swing arc centred on the hinge, radius = width');
+  ok(near(arcSpan(arc), 90), '12m swing arc spans exactly 90° CCW');
+  ok(matches(arcPt(arc, arc.a0), [{ x: 1, y: -0.9 }, { x: 1.9, y: 0 }]) &&
+     matches(arcPt(arc, arc.a1), [{ x: 1, y: -0.9 }, { x: 1.9, y: 0 }]), '12n the arc ends land on the leaf tip and the far jamb');
+
+  // (C) a single window: one glazing centre-line along the wall, NO arc.
+  _resetIds();
+  const ww = createWall({ x: 0, z: 0 }, { x: 4, z: 0 }, { thickness: 0.2 });
+  const win = createOpening(ww.id, 'window', { offset: 1, width: 1.4 });
+  const gw = openingGlyph(ww, win);
+  ok(gw && gw.kind === 'window' && Array.isArray(gw.glass) && gw.glass.length === 2, '12o openingGlyph(window) → kind window, a 2-point glazing line');
+  ok(near(gw.glass[0].x, 1) && near(gw.glass[1].x, 2.4), '12p glazing runs along the wall centreline (1 → 2.4)');
+  const pw = parseDxf(exportDxf(createProject({ levels: [createLevel({ walls: [ww], openings: [win] })] })).dxf);
+  const wLayer = [...pw.declaredLayers].find((l) => l.endsWith('-OPENINGS'));
+  ok(lines(pw, wLayer).length === 1 && arcs(pw, wLayer).length === 0, '12q a window → 1 glazing line, no swing arc');
+  const glass = lines(pw, wLayer)[0];
+  ok(matches(glass.a, [{ x: 1, y: 0 }]) && matches(glass.b, [{ x: 2.4, y: 0 }]), '12r glazing line runs along the wall centreline in the DXF frame');
+
+  // (D) degenerate openings → no symbol (null glyph), caller still draws the rectangle only.
+  _resetIds();
+  ok(openingGlyph(createWall({ x: 0, z: 0 }, { x: 0, z: 0 }), createOpening('x', 'door')) === null, '12s zero-length wall → null glyph');
+  const zwWall = createWall({ x: 0, z: 0 }, { x: 4, z: 0 });
+  ok(openingGlyph(zwWall, createOpening(zwWall.id, 'door', { offset: 1, width: 0 })) === null, '12t zero-width opening → null glyph');
+  // a zero-width opening still draws its rectangle, but the null glyph means NO leaf/arc/glazing symbol.
+  const pz = parseDxf(exportDxf(createProject({ levels: [createLevel({ walls: [zwWall], openings: [createOpening(zwWall.id, 'door', { offset: 1, width: 0 })] })] })).dxf);
+  const zLayer = [...pz.declaredLayers].find((l) => l.endsWith('-OPENINGS'));
+  ok(lines(pz, zLayer || '').length === 0 && arcs(pz, zLayer || '').length === 0, '12u a degenerate opening emits no symbol, drawing still valid');
+  ok(pz.errors.length === 0, '12v degenerate-opening document is still structurally valid');
 }
 
 console.log(`\nexport-dxf.test: ${pass} passed, ${fail} failed`);

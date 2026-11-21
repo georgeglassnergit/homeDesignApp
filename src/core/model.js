@@ -389,10 +389,27 @@ export function validateProject(project) {
   if (!project || typeof project !== 'object') return { ok: false, errors: ['not an object'] };
   if (project.schemaVersion !== SCHEMA_VERSION) errors.push(`schemaVersion ${project.schemaVersion} != ${SCHEMA_VERSION}`);
   if (!Array.isArray(project.levels)) errors.push('levels must be an array');
-  for (const lvl of project.levels || []) {
-    if (!(lvl.height > 0)) errors.push(`level ${lvl.id}: height must be > 0`);
-    const wallIds = new Set(lvl.walls.map(w => w.id));
-    for (const w of lvl.walls) {
+  // Only iterate when it really is an array — a non-array truthy `levels` (a corrupt save) is
+  // already reported above; feeding it to the loop would throw (a string has no `.entries()`,
+  // and `for..of` over one would walk characters). Fall back to empty so the validator stays
+  // non-throwing and returns the structured error instead.
+  for (const [li, lvl] of (Array.isArray(project.levels) ? project.levels : []).entries()) {
+    // A level must be a non-null object before any field access. A null/primitive entry (a
+    // corrupt or hand-edited save, or a truncated array) must fail as a structured error, not
+    // throw a raw TypeError out of the validator — this is the one function callers rely on to
+    // fail loudly *and* gracefully at load, never to crash the app.
+    if (!lvl || typeof lvl !== 'object') { errors.push(`level [${li}]: must be an object`); continue; }
+    const lid = lvl.id != null ? lvl.id : `[${li}]`;
+    if (!(lvl.height > 0)) errors.push(`level ${lid}: height must be > 0`);
+    // Each per-level collection must be an array before we iterate it. A missing or non-array
+    // walls/openings/rooms (same corrupt-save / partial-project threat model as the guards
+    // below) must likewise fail as a structured validation error rather than throw. Treat a bad
+    // collection as empty for the remaining checks so one malformed field can't mask the rest.
+    const walls = Array.isArray(lvl.walls) ? lvl.walls : (errors.push(`level ${lid}: walls must be an array`), []);
+    const openings = Array.isArray(lvl.openings) ? lvl.openings : (errors.push(`level ${lid}: openings must be an array`), []);
+    const rooms = Array.isArray(lvl.rooms) ? lvl.rooms : (errors.push(`level ${lid}: rooms must be an array`), []);
+    const wallIds = new Set(walls.map(w => w.id));
+    for (const w of walls) {
       if (!(w.thickness > 0)) errors.push(`wall ${w.id}: thickness must be > 0`);
       if (!(w.height > 0)) errors.push(`wall ${w.id}: height must be > 0`);
       // A non-finite endpoint (NaN/∞/missing, e.g. from a corrupt save) would slip past the
@@ -401,9 +418,9 @@ export function validateProject(project) {
       if (!finiteXZ(w.a) || !finiteXZ(w.b)) errors.push(`wall ${w.id}: endpoint coordinates must be finite numbers`);
       else if (wallLength(w) < 1e-4) errors.push(`wall ${w.id}: zero length`);
     }
-    for (const o of lvl.openings) {
+    for (const o of openings) {
       if (!wallIds.has(o.wallId)) { errors.push(`opening ${o.id}: unknown wallId ${o.wallId}`); continue; }
-      const w = lvl.walls.find(x => x.id === o.wallId);
+      const w = walls.find(x => x.id === o.wallId);
       const L = wallLength(w);
       // A degenerate opening (zero/negative/NaN width or height) would carve a non-watertight
       // box into the wall and break the CSG two-manifold guarantee — reject it before it reaches
@@ -424,7 +441,7 @@ export function validateProject(project) {
       if (o.offset < 0 || o.offset + o.width > L + 1e-6) errors.push(`opening ${o.id}: doesn't fit on wall ${o.wallId} (offset ${o.offset} + width ${o.width} > ${L.toFixed(2)})`);
       if (o.sill + o.height > w.height + 1e-6) errors.push(`opening ${o.id}: taller than wall`);
     }
-    for (const r of lvl.rooms) {
+    for (const r of rooms) {
       if (!Array.isArray(r.points) || r.points.length < 3) errors.push(`room ${r.id}: needs >= 3 points`);
       // A non-finite room vertex makes the area/centroid/label readouts fail safe to 0, but a
       // valid project should never carry one — reject it so a corrupt save fails loudly at load
@@ -432,14 +449,14 @@ export function validateProject(project) {
       else if (!r.points.every(finiteXZ)) errors.push(`room ${r.id}: point coordinates must be finite numbers`);
     }
     if (lvl.roof) {
-      if (!ROOF_TYPES.includes(lvl.roof.type)) errors.push(`level ${lvl.id}: unknown roof type ${lvl.roof.type}`);
-      if (isPitched(lvl.roof.type) && !(lvl.roof.pitch > 0 && lvl.roof.pitch < 90)) errors.push(`level ${lvl.id}: roof pitch must be between 0 and 90 degrees`);
-      if (lvl.roof.ridge != null && !RIDGE_MODES.includes(lvl.roof.ridge)) errors.push(`level ${lvl.id}: unknown roof ridge ${lvl.roof.ridge}`);
+      if (!ROOF_TYPES.includes(lvl.roof.type)) errors.push(`level ${lid}: unknown roof type ${lvl.roof.type}`);
+      if (isPitched(lvl.roof.type) && !(lvl.roof.pitch > 0 && lvl.roof.pitch < 90)) errors.push(`level ${lid}: roof pitch must be between 0 and 90 degrees`);
+      if (lvl.roof.ridge != null && !RIDGE_MODES.includes(lvl.roof.ridge)) errors.push(`level ${lid}: unknown roof ridge ${lvl.roof.ridge}`);
       // Overhangs (uniform `overhang`, plus the optional per-slope B2 eave/rake) must be
       // finite and non-negative when present. Absent per-slope fields are fine (old saves).
       for (const k of ['overhang', 'eaveOverhang', 'rakeOverhang']) {
         const v = lvl.roof[k];
-        if (v != null && !(Number.isFinite(v) && v >= 0)) errors.push(`level ${lvl.id}: roof ${k} must be a non-negative number`);
+        if (v != null && !(Number.isFinite(v) && v >= 0)) errors.push(`level ${lid}: roof ${k} must be a non-negative number`);
       }
     }
   }
